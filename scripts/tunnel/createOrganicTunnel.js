@@ -491,14 +491,26 @@ function pushTunnelColor(target, time, angle, progress, look) {
 
 function createTunnelMaterial(scene) {
   const material = new BABYLON.PBRMaterial("organic-tunnel-pbr", scene);
-  material.albedoTexture = createTexture(scene, "./assets/textures/architecture/ivory-mineral/ivory_mineral_1k_color.jpg", 1, true);
-  material.bumpTexture = createTexture(scene, "./assets/textures/architecture/ivory-mineral/ivory_mineral_1k_normalgl.jpg", 1, false);
-  material.bumpTexture.level = 0.16;
-  material.metallicTexture = createTexture(scene, "./assets/textures/architecture/ivory-mineral/ivory_mineral_1k_roughness.jpg", 1, false);
+  const textureRoot = "./assets/textures/tunnel/skin-alien-1k";
+  // The mesh UVs already travel 9.2 times along the route and 2.8 times
+  // around the shell. A non-integer multiplier keeps the 1K detail dense
+  // without making its source tile readable through the long tunnel.
+  const textureRepeat = 1.32;
+  material.albedoTexture = createTexture(scene, `${textureRoot}/SkinAlien_19_1k_albedo.png`, textureRepeat, true);
+  material.bumpTexture = createTexture(scene, `${textureRoot}/SkinAlien_19_1k_normal.png`, textureRepeat, false);
+  material.bumpTexture.level = 0.14;
+  // Babylon reads a grayscale roughness map through the green channel of its
+  // metallic texture slot. Metallic contribution stays explicitly disabled.
+  material.metallicTexture = createTexture(scene, `${textureRoot}/SkinAlien_19_1k_roughness.png`, textureRepeat, false);
+  material.ambientTexture = createTexture(scene, `${textureRoot}/SkinAlien_19_1k_ambientOcclusion.png`, textureRepeat, false);
+  material.ambientTexture.level = 0.14;
+  material.useAmbientInGrayScale = true;
   material.useRoughnessFromMetallicTextureGreen = true;
   material.useMetallnessFromMetallicTextureBlue = false;
   material.useVertexColors = true;
-  material.albedoColor = BABYLON.Color3.White();
+  // The supplied albedo is intentionally subdued so the tunnel keeps its
+  // established dark, abstract character rather than reading as saturated skin.
+  material.albedoColor = BABYLON.Color3.FromHexString("#6d7780");
   material.metallic = 0;
   material.roughness = 0.94;
   material.environmentIntensity = 0.08;
@@ -543,9 +555,17 @@ function updateTunnelLights(lights, time, impulse) {
 }
 
 function createTexture(scene, url, tiling, gammaSpace) {
-  const texture = new BABYLON.Texture(url, scene, true, false);
+  const texture = new BABYLON.Texture(
+    url,
+    scene,
+    false,
+    false,
+    BABYLON.Texture.TRILINEAR_SAMPLINGMODE,
+  );
   texture.uScale = tiling;
   texture.vScale = tiling;
+  texture.wrapU = BABYLON.Texture.WRAP_ADDRESSMODE;
+  texture.wrapV = BABYLON.Texture.WRAP_ADDRESSMODE;
   texture.gammaSpace = gammaSpace;
   texture.anisotropicFilteringLevel = 2;
   return texture;
