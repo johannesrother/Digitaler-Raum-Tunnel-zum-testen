@@ -20,6 +20,7 @@ const RIFT_APPROACH_REMAINING_TIME = 3.4;
 const RIFT_CLOSE_DURATION = 1.4;
 const RIFT_CLOSURE_FADE_RANGE = 0.42;
 const RIFT_VISIBILITY_EPSILON = 0.002;
+const RIFT_APERTURE_MASK_DEPTH = -0.145;
 const ENTRY_ROUTE_EASE_DURATION = 0.75;
 const FLASH_DEBUG_PRE_ENTRY_MS = 2000;
 const FLASH_DEBUG_POST_ENTRY_MS = 3000;
@@ -64,6 +65,20 @@ export function createIdyllTunnelTransition(scene, options) {
   root.position.copyFrom(start);
   options.desktopCamera.parent = root;
   options.desktopCamera.position.set(0, options.desktopCamera.position.y - start.y, 0);
+  const riftEntryProbe = () => {
+    const camera = xrCamera ?? scene.activeCamera ?? options.desktopCamera;
+    return {
+      // The locomotion root is updated in this observer; camera global
+      // matrices are updated later by Babylon during the same frame.
+      position: root.position,
+      nearClip: camera?.minZ ?? 0,
+    };
+  };
+  const initialRiftEntryProbe = riftEntryProbe();
+  let previousRiftEntryDistance = rift.entryPlaneDistance(
+    initialRiftEntryProbe.position,
+    initialRiftEntryProbe.nearClip,
+  );
   // The real tunnel stays out of the idyll until the rift itself is open.
   tunnelWorld.hide();
   options.tunnel.setSequenceActive(false);
@@ -78,34 +93,19 @@ export function createIdyllTunnelTransition(scene, options) {
     const tunnelReveal = smoothstep((elapsed - RIFT_TUNNEL_REVEAL_START) / (IDYLL_TRAVEL_DURATION - RIFT_TUNNEL_REVEAL_START));
     const tunnelElapsed = elapsed - TUNNEL_START;
     const tunnelTime = BABYLON.Scalar.Clamp(tunnelElapsed, 0, TUNNEL_DURATION);
-    const hasEnteredTunnel = elapsed >= TUNNEL_START;
+    const hasReachedTunnelTimeline = elapsed >= TUNNEL_START;
     const hasReachedWhiteRoom = tunnelElapsed >= TUNNEL_DURATION;
     flashDebug.arm(tunnelElapsed);
 
-    if (hasEnteredTunnel && !tunnelEntryPrepared) {
-      tunnelEntryPrepared = true;
-      options.onTunnelEntry?.();
-    }
     if (!portalClosed) {
       tunnelWorld.reveal(tunnelReveal);
     }
     // Start the already visible tunnel's wall motion before the visitor
     // crosses the rift. This avoids a second visual "start" at entry.
     options.tunnel.setSequenceActive(tunnelReveal > 0.01 && !hasReachedWhiteRoom);
-    // The first frame inside the tunnel is a hard world boundary. The Rift
-    // disables its stencil portal as it begins closing, so the idyll must be
-    // retired in this very frame rather than during a later overlap window.
-    if (hasEnteredTunnel && !idyllHidden) {
-      tunnelWorld.closePortal();
-      rift.closePortalMask();
-      portalClosed = true;
-      idyllHidden = true;
-    }
-    rift.update(elapsed, riftFormation, tunnelReveal, hasEnteredTunnel ? tunnelTime : -1);
-
     if (elapsed < IDYLL_TRAVEL_DURATION) {
       applyPathTransform(root, tunnelRoute, riftApproachTime * calmTravelProgress(elapsed / IDYLL_TRAVEL_DURATION), initialHeading, delta);
-    } else if (!hasEnteredTunnel) {
+    } else if (!hasReachedTunnelTimeline) {
       applyPathTransform(root, tunnelRoute, riftApproachTime + (tunnelRoute.entryTime - riftApproachTime)
         * riftPullProgress(elapsed - IDYLL_TRAVEL_DURATION, tunnelRoute, riftApproachTime), initialHeading, delta);
     } else if (!hasReachedWhiteRoom) {
@@ -141,7 +141,33 @@ export function createIdyllTunnelTransition(scene, options) {
         whiteRoomFinished = true;
       }
     }
-    debug.update(elapsed, tunnelTime, tunnelRoute, hasEnteredTunnel, riftFormation, riftApproachTime);
+
+    // The rendered stencil aperture is the only authoritative world boundary.
+    // Its plane is slightly in front of the route's entrance centre, so using
+    // the later timeline boundary here briefly exposed the still-active idyll.
+    const currentRiftEntryProbe = riftEntryProbe();
+    const riftEntryDistance = rift.entryPlaneDistance(
+      currentRiftEntryProbe.position,
+      currentRiftEntryProbe.nearClip,
+    );
+    const crossedRiftEntryPlane = previousRiftEntryDistance < 0 && riftEntryDistance >= 0;
+    previousRiftEntryDistance = riftEntryDistance;
+    if (crossedRiftEntryPlane && !tunnelEntryPrepared) {
+      tunnelEntryPrepared = true;
+      options.onTunnelEntry?.();
+    }
+    // The first frame on the tunnel side of the physical aperture is a hard
+    // world boundary. Portal/stencil retirement and idyll shutdown must occur
+    // in that same frame, independent of the locomotion clock.
+    if (tunnelEntryPrepared && !idyllHidden) {
+      tunnelWorld.closePortal();
+      rift.closePortalMask();
+      portalClosed = true;
+      idyllHidden = true;
+    }
+    rift.update(elapsed, riftFormation, tunnelReveal, tunnelEntryPrepared ? tunnelTime : -1);
+
+    debug.update(elapsed, tunnelTime, tunnelRoute, tunnelEntryPrepared, riftFormation, riftApproachTime);
     flashDebug.capture(tunnelElapsed, tunnelTime, tunnelRoute, riftApproachTime);
   });
 
@@ -437,6 +463,8 @@ function createSpacetimeRift(scene, entrance, tunnelStart, tunnelMesh, idyllWorl
   const voidMesh = createFracturedAperture(scene, "spacetime-rift-charcoal-void", voidMaterial, apertureShape.length);
   const apertureMask = createFracturedAperture(scene, "spacetime-rift-opening-stencil-mask", maskMaterial, apertureShape.length);
   apertureMask.mesh.setEnabled(false);
+  const entryPlanePoint = center.add(forward.scale(RIFT_APERTURE_MASK_DEPTH));
+  const entryPlaneNormal = forward.clone().normalize();
   const fragments = createRealityShards(scene, center, lateral, forward, fragmentMaterial);
   const cracks = createShatterCracks(scene, center, lateral, forward);
   const edgeHighlights = createFractureEdgeHighlights(scene, center, lateral, forward);
@@ -572,7 +600,7 @@ function createSpacetimeRift(scene, entrance, tunnelStart, tunnelMesh, idyllWorl
       const apertureScale = (0.08 + formation * 0.78) * closure;
       updateAperture(voidMesh, apertureScale, -0.13);
       if (!portalMaskPermanentlyClosed) {
-        updateAperture(apertureMask, apertureScale, -0.145);
+        updateAperture(apertureMask, apertureScale, RIFT_APERTURE_MASK_DEPTH);
         setPortalMask(reveal > 0.01 && !isClosing);
       }
       voidMesh.mesh.visibility = BABYLON.Scalar.Clamp(formation * (1 - opening * 1.1), 0, 1)
@@ -610,6 +638,16 @@ function createSpacetimeRift(scene, entrance, tunnelStart, tunnelMesh, idyllWorl
       });
     },
     closePortalMask,
+    entryPlaneDistance(position, nearClip = 0) {
+      // The stencil mesh becomes invisible as soon as the camera's near plane
+      // reaches it, not when the camera origin reaches it. Shift the logical
+      // handoff plane by that real render boundary so no exposed portal gap
+      // remains between the visible crossing and world retirement.
+      const visibleEntryPlane = entryPlanePoint.subtract(
+        entryPlaneNormal.scale(Math.max(0, nearClip)),
+      );
+      return BABYLON.Vector3.Dot(position.subtract(visibleEntryPlane), entryPlaneNormal);
+    },
     getVisualMeshes() {
       return [
         voidMesh.mesh,
