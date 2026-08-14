@@ -14,6 +14,8 @@ const PATH_SAMPLES = 188;
 const PROFILE_SIDES = 40;
 const WALL_DEFORMATION_TARGETS = 6;
 const MINIMUM_CLEAR_RADIUS = 0.58;
+const GRAZING_LIGHT_BOOST = 1.14;
+const FILL_LIGHT_BOOST = 1.04;
 
 // Six broad, asymmetric cross-section families establish chambers, compressed
 // shoulders and deep opposing valleys. They are deliberately uneven in length
@@ -530,7 +532,7 @@ function createTunnelLights(scene, meshes, route) {
     position.addInPlace(frame.vertical.scale(index % 3 === 0 ? 0.24 : -0.18));
     const light = new BABYLON.PointLight(`organic-tunnel-light-${index}`, position, scene);
     light.range = index === 0 ? 5.8 : 4.8;
-    light.intensity = 0.64;
+    light.intensity = 0.73;
     light.diffuse = index < 2
       ? BABYLON.Color3.FromHexString("#ffd1a3")
       : BABYLON.Color3.FromHexString("#8f9bad");
@@ -540,7 +542,7 @@ function createTunnelLights(scene, meshes, route) {
   const fill = new BABYLON.HemisphericLight("organic-tunnel-low-fill", BABYLON.Axis.Y, scene);
   fill.diffuse = BABYLON.Color3.FromHexString("#aeb7c4");
   fill.groundColor = BABYLON.Color3.FromHexString("#321d26");
-  fill.intensity = 0.14;
+  fill.intensity = 0.146;
   fill.includedOnlyMeshes.push(...meshes);
   return { points, fill };
 }
@@ -548,11 +550,11 @@ function createTunnelLights(scene, meshes, route) {
 function updateTunnelLights(lights, time, impulse) {
   const look = getTunnelLook(time);
   const phase = getTunnelPhase(time);
-  lights.fill.intensity = 0.08 + look.light * 0.2;
+  lights.fill.intensity = (0.08 + look.light * 0.2) * FILL_LIGHT_BOOST;
   lights.points.forEach((light, index) => {
     const proximity = 1 - Math.min(1, Math.abs(index / (lights.points.length - 1) - time / TUNNEL_DURATION) * 2.6);
     const pulse = index === 2 ? impulse * 0.16 : 0;
-    light.intensity = (0.44 + proximity * 0.9) * look.light + pulse;
+    light.intensity = (0.44 + proximity * 0.9) * look.light * GRAZING_LIGHT_BOOST + pulse;
     if (phase.id === "PEAK" && index >= 3) {
       light.diffuse = BABYLON.Color3.FromHexString("#67252b");
     }
