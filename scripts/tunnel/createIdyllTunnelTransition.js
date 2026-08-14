@@ -1015,18 +1015,19 @@ function createTunnelFlashDebug(scene, options, root, rift) {
     setReportStatus("Downloaded.");
   });
   const downloadCanvas = (canvas, filename) => {
-    canvas.toBlob((blob) => {
-      if (!blob) {
-        setReportStatus("Could not create PNG.");
-        return;
-      }
-      const url = URL.createObjectURL(blob);
+    try {
+      // Keep the download in the button's user-activation event. An async
+      // toBlob callback can be blocked by browsers as a popup/download.
+      const url = canvas.toDataURL("image/png");
       const anchor = document.createElement("a");
       anchor.href = url;
       anchor.download = filename;
+      document.body.append(anchor);
       anchor.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    }, "image/png");
+      anchor.remove();
+    } catch (error) {
+      setReportStatus(`Could not create PNG: ${error.name}`);
+    }
   };
   const buildFrameContactSheet = () => {
     const columns = 5;
