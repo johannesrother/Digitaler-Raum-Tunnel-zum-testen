@@ -8,21 +8,40 @@ import {
 
 const EYE_HEIGHT = 1.65;
 const PATH_SAMPLES = 188;
-const PROFILE_SIDES = 32;
+// Eight extra radial samples are reserved for the higher-curvature fin tips;
+// the path sampling remains unchanged so this is a small, silhouette-focused
+// cost for WebXR rather than a blanket subdivision increase.
+const PROFILE_SIDES = 40;
 const WALL_DEFORMATION_TARGETS = 6;
 const MINIMUM_CLEAR_RADIUS = 0.58;
 
-// Broad, non-repeating form families reconstructed from the supplied tunnel
-// reference: off-centre chambers, one-sided wall weight and folds which carry
-// on for several metres before dissolving into the next formation.  They are
-// deliberately defined in route progress rather than per mesh ring, so the
-// shell remains one continuous space instead of a succession of segments.
-const REFERENCE_FORM_FIELDS = [
-  { at: 0.07, span: 0.15, angle: 4.38, width: 0.78, twist: 1.5, bulge: 0.24, cavity: 0.16, fold: 0.11 },
-  { at: 0.22, span: 0.18, angle: 1.12, width: 0.92, twist: -1.15, bulge: 0.29, cavity: 0.2, fold: 0.14 },
-  { at: 0.39, span: 0.2, angle: 3.03, width: 0.7, twist: 1.85, bulge: 0.26, cavity: 0.24, fold: 0.16 },
-  { at: 0.57, span: 0.17, angle: 5.36, width: 1.02, twist: -1.48, bulge: 0.31, cavity: 0.18, fold: 0.13 },
-  { at: 0.73, span: 0.14, angle: 2.25, width: 0.74, twist: 1.25, bulge: 0.23, cavity: 0.22, fold: 0.15 },
+// Six broad, asymmetric cross-section families establish chambers, compressed
+// shoulders and deep opposing valleys. They are deliberately uneven in length
+// and angle; no sequence repeats around the tunnel circumference.
+const MACRO_FORM_FAMILIES = [
+  { at: 0.08, span: 0.16, angle: 4.65, width: 0.82, twist: 0.72, compression: 0.2, cavity: 0.16, lower: 0.1 },
+  { at: 0.25, span: 0.18, angle: 1.02, width: 0.94, twist: -0.58, compression: 0.24, cavity: 0.2, lower: 0.13 },
+  { at: 0.43, span: 0.16, angle: 3.38, width: 0.72, twist: 1.08, compression: 0.22, cavity: 0.22, lower: 0.14 },
+  { at: 0.58, span: 0.19, angle: 5.25, width: 0.88, twist: -0.84, compression: 0.27, cavity: 0.18, lower: 0.16 },
+  { at: 0.71, span: 0.14, angle: 2.08, width: 0.68, twist: 0.98, compression: 0.29, cavity: 0.2, lower: 0.15 },
+  { at: 0.79, span: 0.09, angle: 4.08, width: 0.74, twist: -0.55, compression: 0.18, cavity: 0.12, lower: 0.1 },
+];
+
+// Eleven independent longitudinal fin families form the reference-inspired
+// interior. A fin is an actual inward displacement in the shell, flanked by
+// outward grooves. The differing spans translate to roughly 2–10 m features.
+const FIN_FAMILIES = [
+  { at: 0.055, span: 0.05, angle: 5.05, width: 0.25, twist: 0.86, depth: 0.29, groove: 0.14, split: 0.36 },
+  { at: 0.125, span: 0.075, angle: 2.42, width: 0.36, twist: -0.64, depth: 0.34, groove: 0.17, split: 0.54 },
+  { at: 0.205, span: 0.048, angle: 0.52, width: 0.22, twist: 1.12, depth: 0.24, groove: 0.15, split: 0.3 },
+  { at: 0.292, span: 0.082, angle: 4.18, width: 0.4, twist: -0.92, depth: 0.38, groove: 0.2, split: 0.62 },
+  { at: 0.365, span: 0.052, angle: 1.72, width: 0.28, twist: 0.74, depth: 0.27, groove: 0.16, split: 0.42 },
+  { at: 0.452, span: 0.066, angle: 5.72, width: 0.31, twist: 1.2, depth: 0.35, groove: 0.19, split: 0.5 },
+  { at: 0.531, span: 0.046, angle: 2.88, width: 0.2, twist: -1.04, depth: 0.26, groove: 0.14, split: 0.28 },
+  { at: 0.615, span: 0.078, angle: 0.86, width: 0.38, twist: 0.82, depth: 0.4, groove: 0.21, split: 0.68 },
+  { at: 0.684, span: 0.05, angle: 3.96, width: 0.24, twist: -0.7, depth: 0.3, groove: 0.17, split: 0.34 },
+  { at: 0.747, span: 0.055, angle: 5.38, width: 0.3, twist: 1.04, depth: 0.33, groove: 0.18, split: 0.46 },
+  { at: 0.795, span: 0.04, angle: 1.9, width: 0.22, twist: -0.5, depth: 0.22, groove: 0.12, split: 0.25 },
 ];
 
 /**
@@ -338,59 +357,93 @@ function bell(value, center, width) {
 }
 
 function organicProfile(angle, progress, detail) {
-  const referenceFlow = getReferenceFormFlow(angle, progress);
-  // The large formations stay legible even in the calm first seconds. Detail
-  // only increases their pressure; it never turns the shell back into a
-  // uniform, noise-deformed cylinder.
-  const formStrength = 0.82 + detail * 0.38;
-  const referenceProfile = 1 + referenceFlow.displacement * formStrength;
+  const referenceFlow = getReferenceFormFlow(angle, progress, detail);
+  // Macro chambers, pronounced fins and meso folds are already present at
+  // entry. The dramatic form language is therefore visible immediately, not
+  // something introduced only by the later panic-lighting phases.
+  const referenceProfile = 1 + referenceFlow.displacement;
   const preservedFunnelProfile = getPreviousOrganicProfile(angle, progress, detail);
   // The existing tiny White Room funnel is authoritative.  Ease the new
   // language back into its prior profile before the terminal aperture.
-  const finalFunnelBlend = smoothstep((progress - 0.79) / 0.14);
+  const finalFunnelBlend = smoothstep((progress - 0.77) / 0.17);
   return BABYLON.Scalar.Clamp(
     BABYLON.Scalar.Lerp(referenceProfile, preservedFunnelProfile, finalFunnelBlend),
-    0.66,
-    1.38,
+    0.64,
+    1.48,
   );
 }
 
-function getReferenceFormFlow(angle, progress) {
+function getReferenceFormFlow(angle, progress, detail) {
   let displacement = 0;
-  let bulge = 0;
-  let cavity = 0;
-  let ridge = 0;
+  let fin = 0;
+  let groove = 0;
+  let fold = 0;
 
-  REFERENCE_FORM_FIELDS.forEach((field, index) => {
-    const longitudinal = bell(progress, field.at, field.span);
-    // Each formation slowly rotates as it travels down the passage. This is
-    // the longitudinal flow visible in the reference, not a radial ring.
-    const localProgress = (progress - field.at) / field.span;
-    const flowingAngle = field.angle + localProgress * field.twist
-      + Math.sin(localProgress * 2.1 + index * 0.83) * 0.18;
-    const weightedBulge = softAngularLobe(angle, flowingAngle, field.width) * longitudinal;
-    const innerCavity = softAngularLobe(
+  MACRO_FORM_FAMILIES.forEach((family, index) => {
+    const longitudinal = bell(progress, family.at, family.span);
+    const localProgress = (progress - family.at) / family.span;
+    const flowingAngle = family.angle + localProgress * family.twist
+      + Math.sin(localProgress * 2.35 + index * 0.71) * 0.2;
+    const compressedShoulder = softAngularLobe(angle, flowingAngle, family.width) * longitudinal;
+    const oppositeChamber = softAngularLobe(
       angle,
-      flowingAngle + 2.12 + Math.sin(localProgress * 1.7) * 0.28,
-      field.width * 0.78,
-    ) * bell(progress, field.at + field.span * 0.16, field.span * 0.82);
-    const diagonalFold = softAngularLobe(
+      flowingAngle + 2.05 + Math.sin(localProgress * 1.8) * 0.22,
+      family.width * 1.1,
+    ) * bell(progress, family.at + family.span * 0.1, family.span * 0.94);
+    const lowerFold = softAngularLobe(
       angle,
-      flowingAngle - 0.93 + localProgress * 0.58,
-      field.width * 0.34,
-    ) * bell(progress, field.at - field.span * 0.1, field.span * 1.22);
-
-    displacement += weightedBulge * field.bulge - innerCavity * field.cavity + diagonalFold * field.fold;
-    bulge += weightedBulge;
-    cavity += innerCavity;
-    ridge += diagonalFold;
+      flowingAngle - 1.18 + localProgress * 0.42,
+      family.width * 0.52,
+    ) * bell(progress, family.at - family.span * 0.08, family.span * 1.12);
+    displacement += -compressedShoulder * family.compression
+      + oppositeChamber * family.cavity
+      - lowerFold * family.lower;
+    fin += compressedShoulder + lowerFold * 0.55;
+    groove += oppositeChamber;
+    fold += lowerFold;
   });
 
-  // A restrained irregular drift joins the major formations without adding
-  // a readable construction rhythm or fine procedural noise.
-  const connectiveFlow = Math.sin(angle * 1.31 + progress * 5.2 + Math.sin(progress * 3.7)) * 0.032
-    + Math.sin(angle * 2.06 - progress * 3.3 + 1.7) * 0.018;
-  return { displacement: displacement + connectiveFlow, bulge, cavity, ridge };
+  FIN_FAMILIES.forEach((family, index) => {
+    const longitudinal = bell(progress, family.at, family.span);
+    const localProgress = (progress - family.at) / family.span;
+    const finAngle = family.angle + localProgress * family.twist
+      + Math.sin(localProgress * 2.6 + index * 1.17) * 0.13;
+    const primaryFin = softAngularLobe(angle, finAngle, family.width) * longitudinal;
+    const primaryGroove = softAngularLobe(
+      angle,
+      finAngle + 0.58 + Math.sin(localProgress * 1.9) * 0.14,
+      family.width * 0.72,
+    ) * bell(progress, family.at + family.span * 0.12, family.span * 1.08);
+    const counterGroove = softAngularLobe(
+      angle,
+      finAngle - 0.66,
+      family.width * 0.56,
+    ) * bell(progress, family.at - family.span * 0.08, family.span * 0.9);
+    // Some fins fork into a smaller ridge while others remain single. The
+    // split varies by family and fades in/out with its parent rather than
+    // creating a radial star pattern.
+    const branch = softAngularLobe(
+      angle,
+      finAngle + 0.34 + localProgress * 0.38,
+      family.width * 0.48,
+    ) * bell(progress, family.at + family.span * family.split, family.span * 0.56);
+    displacement += -primaryFin * family.depth
+      + primaryGroove * family.groove
+      + counterGroove * family.groove * 0.54
+      - branch * family.depth * 0.58;
+    fin += primaryFin + branch * 0.72;
+    groove += primaryGroove + counterGroove;
+    fold += branch;
+  });
+
+  // Meso-scale irregularity roughens the broad formations while staying far
+  // below the depth of a fin or groove. Its unequal frequencies never align
+  // to the route's mesh sections.
+  const mesoScale = 0.042 + detail * 0.026;
+  const meso = Math.sin(angle * 3.17 + progress * 17.3 + Math.sin(progress * 4.7)) * mesoScale
+    + Math.sin(angle * 5.43 - progress * 11.1 + 0.9) * mesoScale * 0.52
+    + Math.sin(angle * 2.21 + progress * 8.4) * mesoScale * 0.42;
+  return { displacement: displacement + meso, fin, groove, fold };
 }
 
 function getPreviousOrganicProfile(angle, progress, detail) {
@@ -423,11 +476,11 @@ function pushTunnelColor(target, time, angle, progress, look) {
   const charcoal = new BABYLON.Color3(0.12, 0.12, 0.145);
   const progression = smoothstep((time - 5) / 53);
   const base = BABYLON.Color3.Lerp(warm, charcoal, progression);
-  const flow = getReferenceFormFlow(angle, progress);
-  const bulgeLight = Math.min(1, flow.bulge);
-  const cavityShade = Math.min(1, flow.cavity);
-  const ridgeShade = Math.min(1, flow.ridge);
-  const surfaceLight = 0.62 + bulgeLight * 0.2 - ridgeShade * 0.13 - cavityShade * 0.12;
+  const flow = getReferenceFormFlow(angle, progress, look.detail);
+  const finShade = Math.min(1, flow.fin);
+  const grooveLight = Math.min(1, flow.groove);
+  const foldShade = Math.min(1, flow.fold);
+  const surfaceLight = 0.58 + grooveLight * 0.17 - finShade * 0.1 - foldShade * 0.13;
   target.push(
     base.r * surfaceLight,
     base.g * surfaceLight,
@@ -447,7 +500,7 @@ function createTunnelMaterial(scene) {
   material.useVertexColors = true;
   material.albedoColor = BABYLON.Color3.White();
   material.metallic = 0;
-  material.roughness = 0.9;
+  material.roughness = 0.94;
   material.environmentIntensity = 0.08;
   material.specularIntensity = 0.1;
   material.backFaceCulling = false;
