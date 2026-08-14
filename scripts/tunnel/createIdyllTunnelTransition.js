@@ -21,11 +21,10 @@ const RIFT_CLOSE_DURATION = 1.4;
 const RIFT_CLOSURE_FADE_RANGE = 0.42;
 const RIFT_VISIBILITY_EPSILON = 0.002;
 const ENTRY_ROUTE_EASE_DURATION = 0.75;
-const FLASH_DEBUG_DURATION_MS = 4000;
+const FLASH_DEBUG_PRE_ENTRY_MS = 2000;
+const FLASH_DEBUG_POST_ENTRY_MS = 3000;
 const FLASH_DEBUG_MAX_EVENTS = 12000;
-const FLASH_FRAME_CAPTURE_DURATION_MS = 2500;
-const FLASH_FRAME_CAPTURE_MAX_FRAMES = 150;
-const FLASH_FRAME_CAPTURE_WIDTH = 256;
+const FLASH_FRAME_CAPTURE_WIDTH = 160;
 
 /**
  * The only automatic motion in the experience. A parent transform carries
@@ -81,10 +80,10 @@ export function createIdyllTunnelTransition(scene, options) {
     const tunnelTime = BABYLON.Scalar.Clamp(tunnelElapsed, 0, TUNNEL_DURATION);
     const hasEnteredTunnel = elapsed >= TUNNEL_START;
     const hasReachedWhiteRoom = tunnelElapsed >= TUNNEL_DURATION;
+    flashDebug.arm(tunnelElapsed);
 
     if (hasEnteredTunnel && !tunnelEntryPrepared) {
       tunnelEntryPrepared = true;
-      flashDebug.start();
       options.onTunnelEntry?.();
     }
     if (!portalClosed) {
@@ -143,7 +142,7 @@ export function createIdyllTunnelTransition(scene, options) {
       }
     }
     debug.update(elapsed, tunnelTime, tunnelRoute, hasEnteredTunnel, riftFormation, riftApproachTime);
-    flashDebug.capture(tunnelTime, tunnelRoute, riftApproachTime);
+    flashDebug.capture(tunnelElapsed, tunnelTime, tunnelRoute, riftApproachTime);
   });
 
   return {
@@ -788,7 +787,7 @@ function createTunnelFlashDebug(scene, options, root, rift) {
     return {
       enabled: false,
       nextFrame() {},
-      start() {},
+      arm() {},
       capture() {},
       captureRenderedFrame() {},
       dispose() {},
@@ -834,7 +833,7 @@ function createTunnelFlashDebug(scene, options, root, rift) {
   const frameContact = document.createElement("section");
   frameContact.style.cssText = "display:none;margin-top:10px";
   const frameContactTitle = document.createElement("strong");
-  frameContactTitle.textContent = "FRAME CONTACT SHEET (0.0-2.5 s)";
+  frameContactTitle.textContent = "FRAME CONTACT SHEET (-2.0 s to +3.0 s)";
   const frameContactGrid = document.createElement("div");
   frameContactGrid.style.cssText = "display:grid;grid-template-columns:repeat(auto-fill,minmax(108px,1fr));gap:7px;max-height:42vh;overflow:auto;margin-top:7px;padding:7px;border:1px solid rgba(255,255,255,0.2);background:rgba(0,0,0,0.35)";
   frameContact.append(frameContactTitle, frameContactGrid);
@@ -866,21 +865,29 @@ function createTunnelFlashDebug(scene, options, root, rift) {
   const renderingClearState = new Map();
   let active = false;
   let finished = false;
-  let entryTime = 0;
+  let captureStartedAt = 0;
   let captureEndedAt = 0;
+  let timelineMs = 0;
+  let entryFrame = -1;
   let frame = 0;
   let previousState = null;
   let lastUnexpectedIdyll = "";
   let lastEvent = "waiting for tunnel entry";
   const events = [];
   const capturedFrames = [];
+  const frameStates = [];
+  const contextEvents = [];
+  const contextListenerRemovers = [];
   let frameCaptureFinished = false;
   let frameCaptureError = "";
+  let endRequested = false;
   let largestVisualChangeIndex = -1;
   let previousFramePixels = null;
 
   const timestamp = () => performance.now();
-  const sinceEntry = () => active || finished ? timestamp() - entryTime : 0;
+  const sinceEntry = () => active || finished ? timelineMs : 0;
+  const canvas = scene.getEngine().getRenderingCanvas();
+  const canvasIdentity = canvas?.id || "render-canvas";
   const colorValue = (color) => color
     ? [color.r, color.g, color.b, color.a].map((value) => Number(value ?? 1).toFixed(3)).join(", ")
     : "none";
@@ -893,6 +900,16 @@ function createTunnelFlashDebug(scene, options, root, rift) {
     return "technical";
   };
   const formatValue = (input) => typeof input === "object" ? JSON.stringify(input) : String(input);
+  const formatRelativeTime = (milliseconds) => `${milliseconds >= 0 ? "+" : ""}${(milliseconds / 1000).toFixed(3)} s`;
+  const hierarchy = (node) => {
+    const names = [];
+    let current = node;
+    while (current) {
+      names.unshift(current.name || `${current.getClassName?.() ?? "node"}-${current.uniqueId ?? "unknown"}`);
+      current = current.parent;
+    }
+    return names.join(" / ");
+  };
   const isIdyllSubject = (subject) => [...idyllMeshes].some((mesh) => mesh.name === subject);
   const isTunnelSubject = (subject) => [...tunnelMeshes].some((mesh) => mesh.name === subject);
   const isLargeLightJump = (event) => {
@@ -958,14 +975,28 @@ function createTunnelFlashDebug(scene, options, root, rift) {
       `Unexpected mesh enabled: ${yesNo(result.unexpectedMeshEnabled)}`,
       `Most suspicious event: ${mostSuspicious}`,
       `Stored events: ${events.length}`,
+      `Captured frames: ${capturedFrames.length}`,
+      `Stored frame states: ${frameStates.length}`,
+      `Tunnel entry frame: ${entryFrame >= 0 ? entryFrame : "not reached"}`,
+      `WebGL context events: ${contextEvents.length}`,
       "",
       "FLASH DEBUG EVENT LOG",
     ];
     events.forEach((event) => {
-      lines.push(`${event.suspicious ? ">>> SUSPECT <<< " : ""}+${(event.sinceTunnelEntryMs / 1000).toFixed(3)} s | frame ${event.frame} | ${event.operation} | ${event.subject} | ${formatValue(event.oldValue)} → ${formatValue(event.newValue)}`);
+      lines.push(`${event.suspicious ? ">>> SUSPECT <<< " : ""}${formatRelativeTime(event.sinceTunnelEntryMs)} | frame ${event.frame} | ${event.operation} | ${event.subject} | ${formatValue(event.oldValue)} → ${formatValue(event.newValue)}`);
+    });
+    lines.push("", "FRAME STATE TIMELINE");
+    frameStates.forEach((state) => {
+      lines.push(`${state.frame === entryFrame ? "*** TUNNEL ENTRY FRAME *** " : ""}${formatRelativeTime(state.sinceTunnelEntryMs)} | frame ${state.frame} | scene ${state.sceneIdentity} | camera ${state.activeCamera?.name ?? "none"} | roots ${state.enabledRootNodes.length} | meshes ${state.enabledMeshes.length} | canvas ${state.canvas.identity} ${state.canvas.width}x${state.canvas.height} | pixel change ${state.visualChange ?? "pending"}`);
     });
     return lines.join("\n");
   };
+  const buildFullReport = () => `${buildReport()}\n\nFRAME STATE DATA (JSON)\n${JSON.stringify({
+    captureWindowMs: { from: -FLASH_DEBUG_PRE_ENTRY_MS, to: FLASH_DEBUG_POST_ENTRY_MS },
+    entryFrame,
+    contextEvents,
+    frameStates,
+  }, null, 2)}`;
   const createButton = (label) => {
     const button = document.createElement("button");
     button.type = "button";
@@ -989,7 +1020,7 @@ function createTunnelFlashDebug(scene, options, root, rift) {
     reportStatus.textContent = message;
   };
   copyButton.addEventListener("click", async () => {
-    const text = buildReport();
+    const text = buildFullReport();
     try {
       await navigator.clipboard.writeText(text);
       setReportStatus("Copied.");
@@ -1005,7 +1036,7 @@ function createTunnelFlashDebug(scene, options, root, rift) {
     }
   });
   downloadButton.addEventListener("click", () => {
-    const blob = new Blob([buildReport()], { type: "text/plain;charset=utf-8" });
+    const blob = new Blob([buildFullReport()], { type: "text/plain;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
@@ -1030,10 +1061,10 @@ function createTunnelFlashDebug(scene, options, root, rift) {
     }
   };
   const buildFrameContactSheet = () => {
-    const columns = 5;
-    const thumbnailWidth = 180;
-    const thumbnailHeight = Math.max(...capturedFrames.map(({ canvas }) => canvas.height), 1);
-    const labelHeight = 28;
+    const columns = 8;
+    const thumbnailWidth = 160;
+    const thumbnailHeight = Math.max(...capturedFrames.map(({ canvas }) => Math.round(canvas.height * thumbnailWidth / canvas.width)), 1);
+    const labelHeight = 30;
     const rows = Math.ceil(capturedFrames.length / columns);
     const contactSheet = document.createElement("canvas");
     contactSheet.width = columns * thumbnailWidth;
@@ -1049,8 +1080,19 @@ function createTunnelFlashDebug(scene, options, root, rift) {
       const x = column * thumbnailWidth;
       const y = row * (thumbnailHeight + labelHeight);
       context.drawImage(captured.canvas, x, y, thumbnailWidth, thumbnailHeight);
-      context.fillText(`+${(captured.sinceEntryMs / 1000).toFixed(3)} s`, x + 4, y + thumbnailHeight + 12);
-      context.fillText(`frame ${captured.frame}`, x + 4, y + thumbnailHeight + 24);
+      const isSpike = index === largestVisualChangeIndex;
+      if (captured.isEntry) {
+        context.strokeStyle = "#58e08d";
+        context.lineWidth = 3;
+        context.strokeRect(x + 1, y + 1, thumbnailWidth - 2, thumbnailHeight - 2);
+      }
+      if (isSpike) {
+        context.strokeStyle = "#ffbe5c";
+        context.lineWidth = 2;
+        context.strokeRect(x + 5, y + 5, thumbnailWidth - 10, thumbnailHeight - 10);
+      }
+      context.fillText(formatRelativeTime(captured.sinceEntryMs), x + 4, y + thumbnailHeight + 12);
+      context.fillText(`${captured.isEntry ? "ENTRY " : ""}${isSpike ? "VISUAL SPIKE " : ""}frame ${captured.frame}`, x + 4, y + thumbnailHeight + 25);
     });
     return contactSheet;
   };
@@ -1059,19 +1101,20 @@ function createTunnelFlashDebug(scene, options, root, rift) {
     capturedFrames.forEach((captured) => {
       const item = document.createElement("button");
       item.type = "button";
-      item.title = `+${(captured.sinceEntryMs / 1000).toFixed(3)} s, frame ${captured.frame}`;
-      item.style.cssText = "display:grid;gap:3px;padding:3px;border:1px solid rgba(255,255,255,0.25);background:#182126;color:#fff;text-align:left;font:10px ui-monospace,monospace;cursor:pointer";
+      const isSpike = capturedFrames.indexOf(captured) === largestVisualChangeIndex;
+      item.title = `${formatRelativeTime(captured.sinceEntryMs)}, frame ${captured.frame}`;
+      item.style.cssText = `display:grid;gap:3px;padding:3px;border:2px solid ${captured.isEntry ? "#58e08d" : isSpike ? "#ffbe5c" : "rgba(255,255,255,0.25)"};background:#182126;color:#fff;text-align:left;font:10px ui-monospace,monospace;cursor:pointer`;
       const thumbnail = document.createElement("canvas");
       thumbnail.width = captured.canvas.width;
       thumbnail.height = captured.canvas.height;
       thumbnail.style.cssText = "display:block;width:100%;height:auto";
       thumbnail.getContext("2d").drawImage(captured.canvas, 0, 0);
       const label = document.createElement("span");
-      label.textContent = `+${(captured.sinceEntryMs / 1000).toFixed(3)} s | frame ${captured.frame}`;
+      label.textContent = `${captured.isEntry ? "ENTRY | " : ""}${isSpike ? "VISUAL SPIKE | " : ""}${formatRelativeTime(captured.sinceEntryMs)} | frame ${captured.frame}`;
       item.append(thumbnail, label);
       item.addEventListener("click", () => {
         framePreviewImage.src = captured.canvas.toDataURL("image/png");
-        framePreviewLabel.textContent = `+${(captured.sinceEntryMs / 1000).toFixed(3)} s | frame ${captured.frame}`;
+        framePreviewLabel.textContent = `${captured.isEntry ? "ENTRY | " : ""}${isSpike ? "VISUAL SPIKE | " : ""}${formatRelativeTime(captured.sinceEntryMs)} | frame ${captured.frame}`;
         framePreview.style.display = "flex";
       });
       frameContactGrid.append(item);
@@ -1121,10 +1164,18 @@ function createTunnelFlashDebug(scene, options, root, rift) {
       setReportStatus(`${capturedFrames.length} rendered frames captured.`);
     }
   };
+  const pixelProbesFor = (pixels, width, height) => [
+    [0.5, 0.5], [0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75],
+  ].map(([x, y]) => {
+    const pixelX = Math.min(width - 1, Math.max(0, Math.round(x * (width - 1))));
+    const pixelY = Math.min(height - 1, Math.max(0, Math.round(y * (height - 1))));
+    const index = (pixelY * width + pixelX) * 4;
+    return [pixelX, pixelY, pixels[index], pixels[index + 1], pixels[index + 2], pixels[index + 3]];
+  });
   const captureRenderedFrame = () => {
     if (!active || frameCaptureFinished) return;
     const elapsedMs = sinceEntry();
-    if (elapsedMs <= FLASH_FRAME_CAPTURE_DURATION_MS && capturedFrames.length < FLASH_FRAME_CAPTURE_MAX_FRAMES) {
+    if (elapsedMs >= -FLASH_DEBUG_PRE_ENTRY_MS && elapsedMs <= FLASH_DEBUG_POST_ENTRY_MS) {
       const sourceCanvas = scene.getEngine().getRenderingCanvas();
       if (!sourceCanvas?.width || !sourceCanvas?.height) {
         frameCaptureError = "Rendered canvas unavailable.";
@@ -1135,13 +1186,22 @@ function createTunnelFlashDebug(scene, options, root, rift) {
           capturedCanvas.height = Math.max(1, Math.round(sourceCanvas.height * FLASH_FRAME_CAPTURE_WIDTH / sourceCanvas.width));
           const context = capturedCanvas.getContext("2d", { willReadFrequently: true });
           context.drawImage(sourceCanvas, 0, 0, capturedCanvas.width, capturedCanvas.height);
-          const visualChange = measureVisualChange(context.getImageData(0, 0, capturedCanvas.width, capturedCanvas.height).data);
+          const pixels = context.getImageData(0, 0, capturedCanvas.width, capturedCanvas.height).data;
+          const visualChange = measureVisualChange(pixels);
+          const pixelProbes = pixelProbesFor(pixels, capturedCanvas.width, capturedCanvas.height);
           capturedFrames.push({
             frame,
             sinceEntryMs: elapsedMs,
             canvas: capturedCanvas,
             visualChange,
+            isEntry: frame === entryFrame,
+            pixelProbes,
           });
+          const frameState = frameStates.at(-1);
+          if (frameState?.frame === frame) {
+            frameState.pixelProbes = pixelProbes;
+            frameState.visualChange = Number(visualChange.toFixed(3));
+          }
           if (capturedFrames.length > 1 && (largestVisualChangeIndex < 0
             || visualChange > capturedFrames[largestVisualChangeIndex].visualChange)) {
             largestVisualChangeIndex = capturedFrames.length - 1;
@@ -1151,14 +1211,12 @@ function createTunnelFlashDebug(scene, options, root, rift) {
         }
       }
     }
-    if (elapsedMs >= FLASH_FRAME_CAPTURE_DURATION_MS
-      || capturedFrames.length >= FLASH_FRAME_CAPTURE_MAX_FRAMES
-      || frameCaptureError) {
-      finishFrameCapture();
+    if (endRequested || frameCaptureError) {
+      finish();
     }
   };
   const record = (operation, subject, oldValue, newValue) => {
-    if (!active || sinceEntry() > FLASH_DEBUG_DURATION_MS) return;
+    if (!active || sinceEntry() > FLASH_DEBUG_POST_ENTRY_MS) return;
     const entry = {
       performanceNow: Number(timestamp().toFixed(2)),
       sinceTunnelEntryMs: Number(sinceEntry().toFixed(2)),
@@ -1172,6 +1230,25 @@ function createTunnelFlashDebug(scene, options, root, rift) {
     appendEvent(entry);
     console.info(`[TUNNEL DEBUG] ${JSON.stringify(entry)}`);
   };
+  ["webglcontextlost", "webglcontextrestored", "webglcontextcreationerror"].forEach((type) => {
+    const handler = (event) => {
+      if (!active) return;
+      const entry = {
+        performanceNow: Number(timestamp().toFixed(2)),
+        sinceTunnelEntryMs: Number(sinceEntry().toFixed(2)),
+        frame,
+        operation: `canvas.${type}`,
+        subject: canvasIdentity,
+        oldValue: "not fired",
+        newValue: event.statusMessage || "fired",
+      };
+      contextEvents.push(entry);
+      appendEvent(entry);
+      console.error(`[TUNNEL DEBUG] ${JSON.stringify(entry)}`);
+    };
+    canvas?.addEventListener(type, handler);
+    contextListenerRemovers.push(() => canvas?.removeEventListener(type, handler));
+  });
   scene.setRenderingAutoClearDepthStencil = function instrumentedAutoClear(groupId, autoClear, depth, stencil) {
     const oldValue = renderingClearState.get(groupId) ?? "unobserved";
     const newValue = { autoClear, depth, stencil };
@@ -1229,6 +1306,45 @@ function createTunnelFlashDebug(scene, options, root, rift) {
       lights: lightState,
     };
   };
+  const captureFrameState = (state) => {
+    const activeCameras = scene.activeCameras?.length ? scene.activeCameras : scene.activeCamera ? [scene.activeCamera] : [];
+    const enabledRootNodes = scene.rootNodes
+      .filter((node) => node.isEnabled())
+      .map((node) => ({ name: node.name, uniqueId: node.uniqueId, hierarchy: hierarchy(node) }));
+    const enabledMeshes = scene.meshes
+      .filter((mesh) => mesh.isEnabled())
+      .map((mesh) => ({
+        name: mesh.name,
+        uniqueId: mesh.uniqueId,
+        hierarchy: hierarchy(mesh),
+        isVisible: mesh.isVisible,
+        visibility: mesh.visibility,
+        renderingGroupId: mesh.renderingGroupId,
+        material: mesh.material?.name ?? null,
+      }));
+    frameStates.push({
+      performanceNow: Number(timestamp().toFixed(2)),
+      sinceTunnelEntryMs: Number(sinceEntry().toFixed(2)),
+      frame,
+      sceneIdentity: scene.uid ?? scene.uniqueId ?? scene.id ?? "scene",
+      activeCamera: scene.activeCamera ? { name: scene.activeCamera.name, uniqueId: scene.activeCamera.uniqueId } : null,
+      activeCameras: activeCameras.map((camera) => ({ name: camera.name, uniqueId: camera.uniqueId })),
+      enabledRootNodes,
+      enabledMeshes,
+      renderingGroups: enabledMeshes.map((mesh) => [mesh.name, mesh.renderingGroupId]),
+      stencilMaterials: [...state.materials.values()].map((material) => ({ name: material.name, stencil: material.stencil })),
+      clearColor: state.scene.clearColor,
+      autoClear: state.scene.autoClear,
+      canvas: {
+        identity: canvasIdentity,
+        width: canvas?.width ?? null,
+        height: canvas?.height ?? null,
+        connected: Boolean(canvas?.isConnected),
+      },
+      pixelProbes: null,
+      visualChange: null,
+    });
+  };
   const compare = (previous, next, operation, subject, fields) => {
     fields.forEach((field) => {
       const oldValue = previous?.[field];
@@ -1259,7 +1375,7 @@ function createTunnelFlashDebug(scene, options, root, rift) {
       "TUNNEL DEBUG",
       `time since entry: ${active || finished ? (shownSinceEntry / 1000).toFixed(3) : "waiting"} s`,
       `frame: ${active || finished ? frame : "-"}`,
-      `frame captures: ${capturedFrames.length} / ${FLASH_FRAME_CAPTURE_MAX_FRAMES}${frameCaptureFinished ? " complete" : ""}`,
+      `frame captures: ${capturedFrames.length}${frameCaptureFinished ? " complete" : ""}`,
       `enabled idyll meshes: ${counts.idyll}`,
       `enabled rift meshes: ${counts.rift}`,
       `enabled tunnel meshes: ${counts.tunnel}`,
@@ -1269,10 +1385,11 @@ function createTunnelFlashDebug(scene, options, root, rift) {
       `camera position: ${cameraPosition.x.toFixed(2)}, ${cameraPosition.y.toFixed(2)}, ${cameraPosition.z.toFixed(2)}`,
       `tunnel progress: ${tunnelTime.toFixed(3)} s / ${TUNNEL_DURATION} s (${tunnelDistance.toFixed(2)} m)`,
       `last event: ${lastEvent}`,
-      finished ? "capture complete (4.0 s)" : "capture armed",
+      finished ? "capture complete (-2.0 s to +3.0 s)" : "capture armed for -2.0 s to +3.0 s",
     ].join("\n");
   };
   const detectUnexpectedIdyll = () => {
+    if (sinceEntry() < 0) return;
     const unexpected = scene.meshes
       .filter((mesh) => mesh.isEnabled() && meshCategory(mesh) === "idyll")
       .map((mesh) => mesh.name)
@@ -1302,6 +1419,7 @@ function createTunnelFlashDebug(scene, options, root, rift) {
     finished = true;
     setEnabledRestorers.splice(0).forEach((restore) => restore());
     lightRestorers.splice(0).forEach((restore) => restore());
+    contextListenerRemovers.splice(0).forEach((remove) => remove());
     scene.setRenderingAutoClearDepthStencil = originalAutoClear;
     console.info(`[TUNNEL DEBUG] capture complete ${JSON.stringify({
       performanceNow: Number(timestamp().toFixed(2)),
@@ -1318,23 +1436,25 @@ function createTunnelFlashDebug(scene, options, root, rift) {
     nextFrame() {
       if (active) frame += 1;
     },
-    start() {
-      if (active || finished) return;
+    arm(tunnelElapsed) {
+      if (active || finished || tunnelElapsed < -FLASH_DEBUG_PRE_ENTRY_MS) return;
       active = true;
-      entryTime = timestamp();
+      captureStartedAt = timestamp();
+      timelineMs = tunnelElapsed * 1000;
       frame = 0;
       previousState = currentState();
       scene.meshes.forEach((mesh) => wrapSetEnabled(mesh, "mesh", setEnabledRestorers));
       scene.lights.forEach((light) => wrapSetEnabled(light, "light", lightRestorers));
-      console.info(`[TUNNEL DEBUG] tunnel-entry capture started ${JSON.stringify({
-        performanceNow: Number(entryTime.toFixed(2)),
-        sinceTunnelEntryMs: 0,
+      console.info(`[TUNNEL DEBUG] pre-entry capture armed ${JSON.stringify({
+        performanceNow: Number(captureStartedAt.toFixed(2)),
+        sinceTunnelEntryMs: Number(timelineMs.toFixed(2)),
         frame,
       })}`);
     },
-    capture(tunnelTime, tunnelRoute, riftApproachTime) {
+    capture(tunnelElapsed, tunnelTime, tunnelRoute, riftApproachTime) {
       if (!active && !finished) return;
       if (active) {
+        timelineMs = tunnelElapsed * 1000;
         const nextState = currentState();
         compare(previousState.scene, nextState.scene, "scene", "scene", ["clearColor", "autoClear"]);
         nextState.meshes.forEach((next, key) => compare(previousState.meshes.get(key), next, "mesh", next.name, [
@@ -1351,8 +1471,22 @@ function createTunnelFlashDebug(scene, options, root, rift) {
           "enabled", "intensity",
         ]));
         previousState = nextState;
+        if (entryFrame < 0 && sinceEntry() >= 0) {
+          entryFrame = frame;
+          appendEvent({
+            performanceNow: Number(timestamp().toFixed(2)),
+            sinceTunnelEntryMs: Number(sinceEntry().toFixed(2)),
+            frame,
+            operation: "TUNNEL ENTRY FRAME",
+            subject: "timeline",
+            oldValue: "outside tunnel",
+            newValue: "inside tunnel",
+            suspicious: true,
+          });
+        }
+        captureFrameState(nextState);
         detectUnexpectedIdyll();
-        if (sinceEntry() >= FLASH_DEBUG_DURATION_MS) finish();
+        if (sinceEntry() >= FLASH_DEBUG_POST_ENTRY_MS) endRequested = true;
       }
       drawOverlay(tunnelTime, tunnelRoute, riftApproachTime);
     },
