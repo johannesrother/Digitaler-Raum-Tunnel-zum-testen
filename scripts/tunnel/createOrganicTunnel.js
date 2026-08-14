@@ -12,6 +12,19 @@ const PROFILE_SIDES = 32;
 const WALL_DEFORMATION_TARGETS = 6;
 const MINIMUM_CLEAR_RADIUS = 0.58;
 
+// Broad, non-repeating form families reconstructed from the supplied tunnel
+// reference: off-centre chambers, one-sided wall weight and folds which carry
+// on for several metres before dissolving into the next formation.  They are
+// deliberately defined in route progress rather than per mesh ring, so the
+// shell remains one continuous space instead of a succession of segments.
+const REFERENCE_FORM_FIELDS = [
+  { at: 0.07, span: 0.15, angle: 4.38, width: 0.78, twist: 1.5, bulge: 0.24, cavity: 0.16, fold: 0.11 },
+  { at: 0.22, span: 0.18, angle: 1.12, width: 0.92, twist: -1.15, bulge: 0.29, cavity: 0.2, fold: 0.14 },
+  { at: 0.39, span: 0.2, angle: 3.03, width: 0.7, twist: 1.85, bulge: 0.26, cavity: 0.24, fold: 0.16 },
+  { at: 0.57, span: 0.17, angle: 5.36, width: 1.02, twist: -1.48, bulge: 0.31, cavity: 0.18, fold: 0.13 },
+  { at: 0.73, span: 0.14, angle: 2.25, width: 0.74, twist: 1.25, bulge: 0.23, cavity: 0.22, fold: 0.15 },
+];
+
 /**
  * Builds one continuous, inward-facing biomorphic shell along a non-linear
  * path. Wide, overlapping profile fields make the shell read as a continuous
@@ -325,21 +338,70 @@ function bell(value, center, width) {
 }
 
 function organicProfile(angle, progress, detail) {
+  const referenceFlow = getReferenceFormFlow(angle, progress);
+  // The large formations stay legible even in the calm first seconds. Detail
+  // only increases their pressure; it never turns the shell back into a
+  // uniform, noise-deformed cylinder.
+  const formStrength = 0.82 + detail * 0.38;
+  const referenceProfile = 1 + referenceFlow.displacement * formStrength;
+  const preservedFunnelProfile = getPreviousOrganicProfile(angle, progress, detail);
+  // The existing tiny White Room funnel is authoritative.  Ease the new
+  // language back into its prior profile before the terminal aperture.
+  const finalFunnelBlend = smoothstep((progress - 0.79) / 0.14);
+  return BABYLON.Scalar.Clamp(
+    BABYLON.Scalar.Lerp(referenceProfile, preservedFunnelProfile, finalFunnelBlend),
+    0.66,
+    1.38,
+  );
+}
+
+function getReferenceFormFlow(angle, progress) {
+  let displacement = 0;
+  let bulge = 0;
+  let cavity = 0;
+  let ridge = 0;
+
+  REFERENCE_FORM_FIELDS.forEach((field, index) => {
+    const longitudinal = bell(progress, field.at, field.span);
+    // Each formation slowly rotates as it travels down the passage. This is
+    // the longitudinal flow visible in the reference, not a radial ring.
+    const localProgress = (progress - field.at) / field.span;
+    const flowingAngle = field.angle + localProgress * field.twist
+      + Math.sin(localProgress * 2.1 + index * 0.83) * 0.18;
+    const weightedBulge = softAngularLobe(angle, flowingAngle, field.width) * longitudinal;
+    const innerCavity = softAngularLobe(
+      angle,
+      flowingAngle + 2.12 + Math.sin(localProgress * 1.7) * 0.28,
+      field.width * 0.78,
+    ) * bell(progress, field.at + field.span * 0.16, field.span * 0.82);
+    const diagonalFold = softAngularLobe(
+      angle,
+      flowingAngle - 0.93 + localProgress * 0.58,
+      field.width * 0.34,
+    ) * bell(progress, field.at - field.span * 0.1, field.span * 1.22);
+
+    displacement += weightedBulge * field.bulge - innerCavity * field.cavity + diagonalFold * field.fold;
+    bulge += weightedBulge;
+    cavity += innerCavity;
+    ridge += diagonalFold;
+  });
+
+  // A restrained irregular drift joins the major formations without adding
+  // a readable construction rhythm or fine procedural noise.
+  const connectiveFlow = Math.sin(angle * 1.31 + progress * 5.2 + Math.sin(progress * 3.7)) * 0.032
+    + Math.sin(angle * 2.06 - progress * 3.3 + 1.7) * 0.018;
+  return { displacement: displacement + connectiveFlow, bulge, cavity, ridge };
+}
+
+function getPreviousOrganicProfile(angle, progress, detail) {
   const intensity = 0.34 + detail * 0.76;
-  // These slow fields drift around the section and along the route. None is
-  // aligned with a section ring, so the surface has broad bulges and folds
-  // rather than a repeated procedural band.
   const primaryBulge = Math.sin(angle * 1.08 + progress * 4.3 + Math.sin(progress * 2.2) * 0.7) * 0.15;
   const opposingBulge = Math.sin(angle * 2.17 - progress * 6.6 + 1.4) * 0.085;
   const softFold = Math.sin(angle * 3.12 + progress * 13.8 + Math.sin(progress * 5.1)) * 0.064;
   const driftingCavity = -softAngularLobe(angle, progress * 8.4 + 1.9, 0.66)
     * (0.055 + detail * 0.085);
   const smallShift = Math.sin(angle * 4.31 - progress * 19.7 + 0.8) * 0.02;
-  return BABYLON.Scalar.Clamp(
-    1 + (primaryBulge + opposingBulge + softFold + driftingCavity + smallShift) * intensity,
-    0.79,
-    1.26,
-  );
+  return 1 + (primaryBulge + opposingBulge + softFold + driftingCavity + smallShift) * intensity;
 }
 
 function softAngularLobe(angle, center, width) {
@@ -361,10 +423,11 @@ function pushTunnelColor(target, time, angle, progress, look) {
   const charcoal = new BABYLON.Color3(0.12, 0.12, 0.145);
   const progression = smoothstep((time - 5) / 53);
   const base = BABYLON.Color3.Lerp(warm, charcoal, progression);
-  const broadMembrane = 0.5 + 0.5 * Math.sin(angle * 1.08 + progress * 4.3 + Math.sin(progress * 2.2) * 0.7);
-  const diagonalFold = Math.max(0, Math.sin(angle * 3.12 + progress * 13.8 + Math.sin(progress * 5.1)));
-  const cavityShade = softAngularLobe(angle, progress * 8.4 + 1.9, 0.66);
-  const surfaceLight = 0.62 + broadMembrane * 0.2 - diagonalFold * 0.14 - cavityShade * 0.1;
+  const flow = getReferenceFormFlow(angle, progress);
+  const bulgeLight = Math.min(1, flow.bulge);
+  const cavityShade = Math.min(1, flow.cavity);
+  const ridgeShade = Math.min(1, flow.ridge);
+  const surfaceLight = 0.62 + bulgeLight * 0.2 - ridgeShade * 0.13 - cavityShade * 0.12;
   target.push(
     base.r * surfaceLight,
     base.g * surfaceLight,
