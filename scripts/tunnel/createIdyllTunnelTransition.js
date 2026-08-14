@@ -23,6 +23,9 @@ const RIFT_VISIBILITY_EPSILON = 0.002;
 const ENTRY_ROUTE_EASE_DURATION = 0.75;
 const FLASH_DEBUG_DURATION_MS = 4000;
 const FLASH_DEBUG_MAX_EVENTS = 12000;
+const FLASH_FRAME_CAPTURE_DURATION_MS = 2500;
+const FLASH_FRAME_CAPTURE_MAX_FRAMES = 150;
+const FLASH_FRAME_CAPTURE_WIDTH = 256;
 
 /**
  * The only automatic motion in the experience. A parent transform carries
@@ -44,6 +47,9 @@ export function createIdyllTunnelTransition(scene, options) {
   const riftApproachTime = Math.max(0.5, tunnelRoute.entryTime - RIFT_APPROACH_REMAINING_TIME);
   const debug = createDebugPanel();
   const flashDebug = createTunnelFlashDebug(scene, options, root, rift);
+  const afterRenderObserver = flashDebug.enabled
+    ? scene.onAfterRenderObservable.add(() => flashDebug.captureRenderedFrame())
+    : null;
   let elapsed = 0;
   let xrCamera = null;
   let previousWorldHidden = false;
@@ -162,6 +168,9 @@ export function createIdyllTunnelTransition(scene, options) {
     },
     dispose() {
       scene.onBeforeRenderObservable.remove(observer);
+      if (afterRenderObserver) {
+        scene.onAfterRenderObservable.remove(afterRenderObserver);
+      }
       options.desktopCamera.parent = null;
       if (xrCamera) {
         xrCamera.parent = null;
@@ -777,9 +786,11 @@ function createTunnelFlashDebug(scene, options, root, rift) {
   const enabled = new URLSearchParams(window.location.search).has("debugFlash");
   if (!enabled) {
     return {
+      enabled: false,
       nextFrame() {},
       start() {},
       capture() {},
+      captureRenderedFrame() {},
       dispose() {},
     };
   }
@@ -801,6 +812,7 @@ function createTunnelFlashDebug(scene, options, root, rift) {
     "border-radius:6px",
     "font:12px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace",
     "box-sizing:border-box",
+    "overflow:auto",
     "pointer-events:auto",
   ].join(";");
   const status = document.createElement("pre");
@@ -819,8 +831,25 @@ function createTunnelFlashDebug(scene, options, root, rift) {
     "white-space:pre-wrap",
     "font:11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace",
   ].join(";");
-  panel.append(status, actions, report);
+  const frameContact = document.createElement("section");
+  frameContact.style.cssText = "display:none;margin-top:10px";
+  const frameContactTitle = document.createElement("strong");
+  frameContactTitle.textContent = "FRAME CONTACT SHEET (0.0-2.5 s)";
+  const frameContactGrid = document.createElement("div");
+  frameContactGrid.style.cssText = "display:grid;grid-template-columns:repeat(auto-fill,minmax(108px,1fr));gap:7px;max-height:42vh;overflow:auto;margin-top:7px;padding:7px;border:1px solid rgba(255,255,255,0.2);background:rgba(0,0,0,0.35)";
+  frameContact.append(frameContactTitle, frameContactGrid);
+  panel.append(status, actions, frameContact, report);
   document.body.append(panel);
+
+  const framePreview = document.createElement("div");
+  framePreview.style.cssText = "display:none;position:fixed;inset:0;z-index:10001;align-items:center;justify-content:center;padding:24px;background:rgba(0,0,0,0.86)";
+  const framePreviewImage = document.createElement("img");
+  framePreviewImage.style.cssText = "max-width:96vw;max-height:90vh;object-fit:contain;border:1px solid rgba(255,255,255,0.45)";
+  const framePreviewLabel = document.createElement("span");
+  framePreviewLabel.style.cssText = "position:absolute;bottom:22px;color:#fff;font:13px ui-monospace,monospace";
+  framePreview.append(framePreviewImage, framePreviewLabel);
+  framePreview.addEventListener("click", () => { framePreview.style.display = "none"; });
+  document.body.append(framePreview);
 
   const tunnelMeshes = new Set([
     options.tunnel.mesh,
@@ -844,6 +873,11 @@ function createTunnelFlashDebug(scene, options, root, rift) {
   let lastUnexpectedIdyll = "";
   let lastEvent = "waiting for tunnel entry";
   const events = [];
+  const capturedFrames = [];
+  let frameCaptureFinished = false;
+  let frameCaptureError = "";
+  let largestVisualChangeIndex = -1;
+  let previousFramePixels = null;
 
   const timestamp = () => performance.now();
   const sinceEntry = () => active || finished ? timestamp() - entryTime : 0;
@@ -942,6 +976,12 @@ function createTunnelFlashDebug(scene, options, root, rift) {
   };
   const copyButton = createButton("COPY DEBUG REPORT");
   const downloadButton = createButton("DOWNLOAD DEBUG LOG");
+  const contactSheetButton = createButton("DOWNLOAD FRAME CONTACT SHEET");
+  const flashFramesButton = createButton("DOWNLOAD FLASH FRAMES");
+  copyButton.disabled = true;
+  downloadButton.disabled = true;
+  contactSheetButton.disabled = true;
+  flashFramesButton.disabled = true;
   const reportStatus = document.createElement("span");
   reportStatus.style.cssText = "align-self:center;color:#c9dce7;font:11px system-ui";
   actions.append(reportStatus);
@@ -974,6 +1014,148 @@ function createTunnelFlashDebug(scene, options, root, rift) {
     URL.revokeObjectURL(url);
     setReportStatus("Downloaded.");
   });
+  const downloadCanvas = (canvas, filename) => {
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        setReportStatus("Could not create PNG.");
+        return;
+      }
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename;
+      anchor.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }, "image/png");
+  };
+  const buildFrameContactSheet = () => {
+    const columns = 5;
+    const thumbnailWidth = 180;
+    const thumbnailHeight = Math.max(...capturedFrames.map(({ canvas }) => canvas.height), 1);
+    const labelHeight = 28;
+    const rows = Math.ceil(capturedFrames.length / columns);
+    const contactSheet = document.createElement("canvas");
+    contactSheet.width = columns * thumbnailWidth;
+    contactSheet.height = Math.max(1, rows * (thumbnailHeight + labelHeight));
+    const context = contactSheet.getContext("2d");
+    context.fillStyle = "#111820";
+    context.fillRect(0, 0, contactSheet.width, contactSheet.height);
+    context.fillStyle = "#f1f5f7";
+    context.font = "11px ui-monospace, monospace";
+    capturedFrames.forEach((captured, index) => {
+      const column = index % columns;
+      const row = Math.floor(index / columns);
+      const x = column * thumbnailWidth;
+      const y = row * (thumbnailHeight + labelHeight);
+      context.drawImage(captured.canvas, x, y, thumbnailWidth, thumbnailHeight);
+      context.fillText(`+${(captured.sinceEntryMs / 1000).toFixed(3)} s`, x + 4, y + thumbnailHeight + 12);
+      context.fillText(`frame ${captured.frame}`, x + 4, y + thumbnailHeight + 24);
+    });
+    return contactSheet;
+  };
+  const showFrameContactSheet = () => {
+    frameContactGrid.replaceChildren();
+    capturedFrames.forEach((captured) => {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.title = `+${(captured.sinceEntryMs / 1000).toFixed(3)} s, frame ${captured.frame}`;
+      item.style.cssText = "display:grid;gap:3px;padding:3px;border:1px solid rgba(255,255,255,0.25);background:#182126;color:#fff;text-align:left;font:10px ui-monospace,monospace;cursor:pointer";
+      const thumbnail = document.createElement("canvas");
+      thumbnail.width = captured.canvas.width;
+      thumbnail.height = captured.canvas.height;
+      thumbnail.style.cssText = "display:block;width:100%;height:auto";
+      thumbnail.getContext("2d").drawImage(captured.canvas, 0, 0);
+      const label = document.createElement("span");
+      label.textContent = `+${(captured.sinceEntryMs / 1000).toFixed(3)} s | frame ${captured.frame}`;
+      item.append(thumbnail, label);
+      item.addEventListener("click", () => {
+        framePreviewImage.src = captured.canvas.toDataURL("image/png");
+        framePreviewLabel.textContent = `+${(captured.sinceEntryMs / 1000).toFixed(3)} s | frame ${captured.frame}`;
+        framePreview.style.display = "flex";
+      });
+      frameContactGrid.append(item);
+    });
+    frameContact.style.display = "block";
+    actions.style.display = "flex";
+    contactSheetButton.disabled = capturedFrames.length === 0;
+    flashFramesButton.disabled = largestVisualChangeIndex < 0;
+  };
+  contactSheetButton.addEventListener("click", () => {
+    downloadCanvas(buildFrameContactSheet(), "tunnel-flash-frame-contact-sheet.png");
+    setReportStatus("Contact sheet download started.");
+  });
+  flashFramesButton.addEventListener("click", () => {
+    if (largestVisualChangeIndex < 0) return;
+    const candidateIndexes = [largestVisualChangeIndex - 1, largestVisualChangeIndex, largestVisualChangeIndex + 1]
+      .filter((index) => index >= 0 && index < capturedFrames.length);
+    candidateIndexes.forEach((index) => {
+      const captured = capturedFrames[index];
+      downloadCanvas(captured.canvas, `tunnel-flash-frame-${String(captured.frame).padStart(3, "0")}-${Math.round(captured.sinceEntryMs)}ms.png`);
+    });
+    setReportStatus("Pixel-change candidate frames download started.");
+  });
+  const measureVisualChange = (pixels) => {
+    if (!previousFramePixels || previousFramePixels.length !== pixels.length) {
+      previousFramePixels = pixels;
+      return 0;
+    }
+    let totalDifference = 0;
+    let samples = 0;
+    for (let index = 0; index < pixels.length; index += 64) {
+      totalDifference += Math.abs(pixels[index] - previousFramePixels[index]);
+      totalDifference += Math.abs(pixels[index + 1] - previousFramePixels[index + 1]);
+      totalDifference += Math.abs(pixels[index + 2] - previousFramePixels[index + 2]);
+      samples += 3;
+    }
+    previousFramePixels = pixels;
+    return samples ? totalDifference / samples : 0;
+  };
+  const finishFrameCapture = () => {
+    if (frameCaptureFinished) return;
+    frameCaptureFinished = true;
+    showFrameContactSheet();
+    if (frameCaptureError) {
+      setReportStatus(frameCaptureError);
+    } else {
+      setReportStatus(`${capturedFrames.length} rendered frames captured.`);
+    }
+  };
+  const captureRenderedFrame = () => {
+    if (!active || frameCaptureFinished) return;
+    const elapsedMs = sinceEntry();
+    if (elapsedMs <= FLASH_FRAME_CAPTURE_DURATION_MS && capturedFrames.length < FLASH_FRAME_CAPTURE_MAX_FRAMES) {
+      const sourceCanvas = scene.getEngine().getRenderingCanvas();
+      if (!sourceCanvas?.width || !sourceCanvas?.height) {
+        frameCaptureError = "Rendered canvas unavailable.";
+      } else {
+        try {
+          const capturedCanvas = document.createElement("canvas");
+          capturedCanvas.width = FLASH_FRAME_CAPTURE_WIDTH;
+          capturedCanvas.height = Math.max(1, Math.round(sourceCanvas.height * FLASH_FRAME_CAPTURE_WIDTH / sourceCanvas.width));
+          const context = capturedCanvas.getContext("2d", { willReadFrequently: true });
+          context.drawImage(sourceCanvas, 0, 0, capturedCanvas.width, capturedCanvas.height);
+          const visualChange = measureVisualChange(context.getImageData(0, 0, capturedCanvas.width, capturedCanvas.height).data);
+          capturedFrames.push({
+            frame,
+            sinceEntryMs: elapsedMs,
+            canvas: capturedCanvas,
+            visualChange,
+          });
+          if (capturedFrames.length > 1 && (largestVisualChangeIndex < 0
+            || visualChange > capturedFrames[largestVisualChangeIndex].visualChange)) {
+            largestVisualChangeIndex = capturedFrames.length - 1;
+          }
+        } catch (error) {
+          frameCaptureError = `Frame capture failed: ${error.name}`;
+        }
+      }
+    }
+    if (elapsedMs >= FLASH_FRAME_CAPTURE_DURATION_MS
+      || capturedFrames.length >= FLASH_FRAME_CAPTURE_MAX_FRAMES
+      || frameCaptureError) {
+      finishFrameCapture();
+    }
+  };
   const record = (operation, subject, oldValue, newValue) => {
     if (!active || sinceEntry() > FLASH_DEBUG_DURATION_MS) return;
     const entry = {
@@ -1076,6 +1258,7 @@ function createTunnelFlashDebug(scene, options, root, rift) {
       "TUNNEL DEBUG",
       `time since entry: ${active || finished ? (shownSinceEntry / 1000).toFixed(3) : "waiting"} s`,
       `frame: ${active || finished ? frame : "-"}`,
+      `frame captures: ${capturedFrames.length} / ${FLASH_FRAME_CAPTURE_MAX_FRAMES}${frameCaptureFinished ? " complete" : ""}`,
       `enabled idyll meshes: ${counts.idyll}`,
       `enabled rift meshes: ${counts.rift}`,
       `enabled tunnel meshes: ${counts.tunnel}`,
@@ -1112,6 +1295,7 @@ function createTunnelFlashDebug(scene, options, root, rift) {
   };
   const finish = () => {
     if (!active) return;
+    finishFrameCapture();
     captureEndedAt = sinceEntry();
     active = false;
     finished = true;
@@ -1123,10 +1307,13 @@ function createTunnelFlashDebug(scene, options, root, rift) {
       sinceTunnelEntryMs: Number(sinceEntry().toFixed(2)),
       frame,
     })}`);
+    copyButton.disabled = false;
+    downloadButton.disabled = false;
     showReport();
   };
 
   return {
+    enabled: true,
     nextFrame() {
       if (active) frame += 1;
     },
@@ -1168,9 +1355,11 @@ function createTunnelFlashDebug(scene, options, root, rift) {
       }
       drawOverlay(tunnelTime, tunnelRoute, riftApproachTime);
     },
+    captureRenderedFrame,
     dispose() {
       finish();
       panel.remove();
+      framePreview.remove();
     },
   };
 }
