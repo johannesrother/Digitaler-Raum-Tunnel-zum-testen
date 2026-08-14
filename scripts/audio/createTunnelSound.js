@@ -40,6 +40,7 @@ export function createTunnelSound() {
     audio.pause();
     audio.currentTime = 0;
     audio.volume = TUNNEL_SOUND_VOLUME;
+    audio.muted = true;
     playing = false;
   };
 
@@ -71,11 +72,20 @@ export function createTunnelSound() {
     playing = true;
     audio.currentTime = 0;
     audio.volume = TUNNEL_SOUND_VOLUME;
-    audio.play()
-      .then(scheduleEnd)
-      .catch(() => {
+    const beginAudiblePlayback = () => {
+      // Keep the muted media element running after the user gesture. Unmuting
+      // it here does not require a second gesture, so the spatial Rift event
+      // can reliably start the soundtrack at the exact crossing frame.
+      audio.muted = false;
+      scheduleEnd();
+    };
+    if (audio.paused) {
+      audio.play().then(beginAudiblePlayback).catch(() => {
         playing = false;
       });
+      return;
+    }
+    beginAudiblePlayback();
   };
 
   const arm = async () => {
@@ -84,9 +94,6 @@ export function createTunnelSound() {
     }
     try {
       await audio.play();
-      audio.pause();
-      audio.currentTime = 0;
-      audio.muted = false;
       unlocked = true;
       if (entryRequested) {
         startPlayback();
