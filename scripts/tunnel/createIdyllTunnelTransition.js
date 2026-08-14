@@ -17,13 +17,7 @@ const FINAL_PULL_START = 52;
 const FINAL_PULL_DURATION = TUNNEL_DURATION - FINAL_PULL_START;
 const FINAL_PULL_STRENGTH = 1.2;
 const RIFT_APPROACH_REMAINING_TIME = 3.4;
-// The visitor needs a short overlap after crossing: the opening remains
-// visible behind them while the same real tunnel has already taken over the
-// forward view.  Only then may the idyll dimension be removed from rendering.
-const RIFT_CLOSE_DURATION = 2;
-const IDYLL_HIDE_DELAY = RIFT_CLOSE_DURATION + 0.2;
-const TUNNEL_ENTRY_TRANSITION_DURATION = 4;
-const TUNNEL_REVEAL_FADE_DURATION = 0.8;
+const RIFT_CLOSE_DURATION = 1.4;
 const ENTRY_ROUTE_EASE_DURATION = 0.75;
 
 /**
@@ -36,7 +30,13 @@ export function createIdyllTunnelTransition(scene, options) {
   const entry = createEntryPath(start, options.entrance, options.initialForward, options.tunnel.route.start);
   const tunnelRoute = createTunnelTravelRoute(entry, options.tunnel.route, options.entrance.center);
   const tunnelWorld = createTunnelWorldGroup(options);
-  const rift = createSpacetimeRift(scene, options.entrance, options.tunnel.route.start, options.tunnel.mesh);
+  const rift = createSpacetimeRift(
+    scene,
+    options.entrance,
+    options.tunnel.route.start,
+    options.tunnel.mesh,
+    options.idyllWorldMeshes,
+  );
   const riftApproachTime = Math.max(0.5, tunnelRoute.entryTime - RIFT_APPROACH_REMAINING_TIME);
   const debug = createDebugPanel();
   let elapsed = 0;
@@ -45,6 +45,7 @@ export function createIdyllTunnelTransition(scene, options) {
   let idyllHidden = false;
   let whiteRoomFinished = false;
   let portalClosed = false;
+  let tunnelEntryPrepared = false;
   let previousFrameTime = performance.now();
   const initialHeading = headingFrom(options.initialForward);
 
@@ -53,8 +54,7 @@ export function createIdyllTunnelTransition(scene, options) {
   root.position.copyFrom(start);
   options.desktopCamera.parent = root;
   options.desktopCamera.position.set(0, options.desktopCamera.position.y - start.y, 0);
-  // The real tunnel is prepared from scene creation, but stays stencil-masked
-  // until the shattered opening begins to reveal it.
+  // The real tunnel stays out of the idyll until the rift itself is open.
   tunnelWorld.hide();
   options.tunnel.setSequenceActive(false);
 
@@ -69,21 +69,17 @@ export function createIdyllTunnelTransition(scene, options) {
     const tunnelTime = BABYLON.Scalar.Clamp(tunnelElapsed, 0, TUNNEL_DURATION);
     const hasEnteredTunnel = elapsed >= TUNNEL_START;
     const hasReachedWhiteRoom = tunnelElapsed >= TUNNEL_DURATION;
-    const entryTransition = smoothstep(tunnelTime / TUNNEL_ENTRY_TRANSITION_DURATION);
-    const tunnelOpacity = hasEnteredTunnel
-      ? 0.2 + 0.8 * smoothstep(tunnelTime / TUNNEL_REVEAL_FADE_DURATION)
-      : tunnelReveal;
 
+    if (hasEnteredTunnel && !tunnelEntryPrepared) {
+      tunnelEntryPrepared = true;
+      options.onTunnelEntry?.();
+    }
     if (!portalClosed) {
-      tunnelWorld.reveal(tunnelOpacity);
+      tunnelWorld.reveal(tunnelReveal);
     }
     // Start the already visible tunnel's wall motion before the visitor
     // crosses the rift. This avoids a second visual "start" at entry.
     options.tunnel.setSequenceActive(tunnelReveal > 0.01 && !hasReachedWhiteRoom);
-    // The same PBR material and moving shell are visible through the rift.
-    // This only eases their response over the first ~5 m after the crossing;
-    // it never replaces material or geometry at the threshold.
-    options.tunnel.setEntryTransition(tunnelReveal > 0.01 ? entryTransition : 1);
     rift.update(elapsed, riftFormation, tunnelReveal, hasEnteredTunnel ? tunnelTime : -1);
 
     if (elapsed < IDYLL_TRAVEL_DURATION) {
@@ -102,7 +98,7 @@ export function createIdyllTunnelTransition(scene, options) {
       options.tunnel.update(tunnelTime);
       // Keep the old world for a short overlap while the rift closes around
       // the visitor instead of switching the environment at the crossing.
-      if (!idyllHidden && tunnelTime >= IDYLL_HIDE_DELAY) {
+      if (!idyllHidden && tunnelTime >= TUNNEL_BLEND_DURATION) {
         tunnelWorld.closePortal();
         portalClosed = true;
         idyllHidden = true;
@@ -385,7 +381,7 @@ function finalReleaseProgress(value, initialSlope) {
   return (cube - 2 * square + progress) * initialSlope + (-2 * cube + 3 * square);
 }
 
-function createSpacetimeRift(scene, entrance, tunnelStart, tunnelMesh) {
+function createSpacetimeRift(scene, entrance, tunnelStart, tunnelMesh, idyllWorldMeshes) {
   const center = tunnelStart.add(new BABYLON.Vector3(0, 1.65, 0));
   const lateral = entrance.lateral.clone();
   const forward = entrance.forward.clone();
@@ -434,8 +430,21 @@ function createSpacetimeRift(scene, entrance, tunnelStart, tunnelMesh) {
     opDepthFail: tunnelMaterial.stencil.opDepthFail,
     opStencilDepthPass: tunnelMaterial.stencil.opStencilDepthPass,
   };
+  const idyllMeshes = idyllWorldMeshes.filter((mesh) => mesh !== tunnelMesh);
+  const idyllRenderGroups = new Map(idyllMeshes.map((mesh) => [mesh, mesh.renderingGroupId]));
+  const idyllMaterials = [...new Set(idyllMeshes.map((mesh) => mesh.material).filter(Boolean))];
+  const idyllicStencils = new Map(idyllMaterials.map((material) => [material, {
+    enabled: material.stencil.enabled,
+    func: material.stencil.func,
+    funcRef: material.stencil.funcRef,
+    funcMask: material.stencil.funcMask,
+    opStencilFail: material.stencil.opStencilFail,
+    opDepthFail: material.stencil.opDepthFail,
+    opStencilDepthPass: material.stencil.opStencilDepthPass,
+  }]));
   let maskEnabled = false;
-  [voidMesh.mesh, ...fragments.map(({ mesh }) => mesh), ...cracks, ...edgeHighlights].forEach((mesh) => { mesh.renderingGroupId = 2; });
+  let portalMaskEnabled = false;
+  [voidMesh.mesh, ...fragments.map(({ mesh }) => mesh), ...cracks, ...edgeHighlights].forEach((mesh) => { mesh.renderingGroupId = 3; });
   apertureMask.mesh.renderingGroupId = 0;
 
   const setTunnelMask = (enabled) => {
@@ -445,10 +454,12 @@ function createSpacetimeRift(scene, entrance, tunnelStart, tunnelMesh) {
     maskEnabled = enabled;
     apertureMask.mesh.setEnabled(enabled);
     if (enabled) {
-      // The stencil mask is drawn in group 0. Preserve its stencil values
-      // into group 1, where the real tunnel is tested against that opening.
+      // Group 0 writes the aperture. Group 1 renders the idyll everywhere
+      // except that aperture; group 2 renders the one real tunnel only inside
+      // it. This prevents the meadow from leaking into the portal centre.
       scene.setRenderingAutoClearDepthStencil(1, false, false, false);
-      tunnelMesh.renderingGroupId = 1;
+      scene.setRenderingAutoClearDepthStencil(2, false, false, false);
+      tunnelMesh.renderingGroupId = 2;
       tunnelMaterial.stencil.enabled = true;
       tunnelMaterial.stencil.func = BABYLON.Engine.EQUAL;
       tunnelMaterial.stencil.funcRef = 1;
@@ -459,8 +470,37 @@ function createSpacetimeRift(scene, entrance, tunnelStart, tunnelMesh) {
       return;
     }
     scene.setRenderingAutoClearDepthStencil(1, true, true, true);
+    scene.setRenderingAutoClearDepthStencil(2, true, true, true);
     tunnelMesh.renderingGroupId = originalRenderGroup;
     Object.assign(tunnelMaterial.stencil, originalStencil);
+  };
+
+  const setIdyllMask = (enabled) => {
+    idyllMeshes.forEach((mesh) => {
+      mesh.renderingGroupId = enabled ? 1 : idyllRenderGroups.get(mesh);
+    });
+    idyllicStencils.forEach((stencil, material) => {
+      if (!enabled) {
+        Object.assign(material.stencil, stencil);
+        return;
+      }
+      material.stencil.enabled = true;
+      material.stencil.func = BABYLON.Engine.NOTEQUAL;
+      material.stencil.funcRef = 1;
+      material.stencil.funcMask = 0xff;
+      material.stencil.opStencilFail = BABYLON.Engine.KEEP;
+      material.stencil.opDepthFail = BABYLON.Engine.KEEP;
+      material.stencil.opStencilDepthPass = BABYLON.Engine.KEEP;
+    });
+  };
+
+  const setPortalMask = (enabled) => {
+    if (enabled === portalMaskEnabled) {
+      return;
+    }
+    portalMaskEnabled = enabled;
+    setTunnelMask(enabled);
+    setIdyllMask(enabled);
   };
 
   const setPoint = (positions, offset, x, y, depth) => {
@@ -480,7 +520,7 @@ function createSpacetimeRift(scene, entrance, tunnelStart, tunnelMesh) {
       const isClosing = tunnelTime >= 0;
       const closure = isClosing ? 1 - smoothstep(tunnelTime / RIFT_CLOSE_DURATION) : 1;
       if (formation <= 0 || closure <= 0.01) {
-        setTunnelMask(false);
+        setPortalMask(false);
         voidMesh.mesh.setEnabled(false);
         apertureMask.mesh.setEnabled(false);
         fragments.forEach(({ mesh }) => mesh.setEnabled(false));
@@ -493,7 +533,7 @@ function createSpacetimeRift(scene, entrance, tunnelStart, tunnelMesh) {
       updateAperture(voidMesh, apertureScale, -0.13);
       updateAperture(apertureMask, apertureScale, -0.145);
       voidMesh.mesh.visibility = BABYLON.Scalar.Clamp(formation * (1 - opening * 1.1), 0, 1);
-      setTunnelMask(reveal > 0.01 && !isClosing);
+      setPortalMask(reveal > 0.01 && !isClosing);
       voidMesh.mesh.setEnabled(voidMesh.mesh.visibility > 0.01);
       const breakProgress = smoothstep((formation - 0.22) / 0.78);
       fragments.forEach((fragment, index) => {
@@ -522,7 +562,7 @@ function createSpacetimeRift(scene, entrance, tunnelStart, tunnelMesh) {
       cracks.forEach((mesh) => mesh.dispose());
       fragments.forEach(({ mesh }) => mesh.dispose());
       voidMesh.mesh.dispose();
-      setTunnelMask(false);
+      setPortalMask(false);
       apertureMask.mesh.dispose();
       fragmentMaterial.dispose();
       voidMaterial.dispose();

@@ -45,7 +45,7 @@ export function removeIdyllObjectsFromTunnel(entries, route) {
     if (!isInsideTunnelExclusion(position.x, position.z, routeSamples, 0.95)) {
       return;
     }
-    entry.roots.forEach((root) => root.dispose());
+    entry.roots?.forEach((root) => root.dispose());
     entry.anchor.dispose();
     removed.push(entry.prefix);
   });

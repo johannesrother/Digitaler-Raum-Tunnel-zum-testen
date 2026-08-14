@@ -31,6 +31,15 @@ export async function createIdyllScene(engine, canvas) {
     tunnel.route,
   );
   removeIdyllObjectsFromTunnel(environment.assets.placed, tunnel.route);
+  let dreamyIdyllTunnelClearanceApplied = false;
+  const clearDreamyIdyllFromTunnel = () => {
+    if (dreamyIdyllTunnelClearanceApplied) {
+      return;
+    }
+    dreamyIdyllTunnelClearanceApplied = true;
+    clearTunnelTerrain([dreamyIdyll.meadow], tunnel.route);
+    removeIdyllObjectsFromTunnel(dreamyIdyll.vegetation.entries, tunnel.route);
+  };
   environment.lighting.excludeFromTunnel(tunnel.mesh);
   dreamyIdyll.excludeFromTunnel(tunnel.mesh);
   const tunnelExit = tunnel.route.positionAt(0.986);
@@ -49,6 +58,7 @@ export async function createIdyllScene(engine, canvas) {
     initialForward: desktopCamera.getForwardRay(1).direction.clone(),
     whiteRoom,
     whiteRoomTone,
+    onTunnelEntry: clearDreamyIdyllFromTunnel,
     onIdyllHidden: () => dreamyIdyll.hide(),
     idyllWorldMeshes: scene.meshes.filter((mesh) => (
       mesh !== tunnel.mesh && mesh.name !== "white-room-endless-void"

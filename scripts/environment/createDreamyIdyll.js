@@ -289,9 +289,11 @@ async function loadLibrary(scene, world, name) {
 function placeNature(scene, world, libraries, startPosition) {
   const random = createRandom(7391);
   const swayAnchors = [];
+  const entries = [];
   const counts = { grass: 0, wispyGrass: 0, trees: 0, flowers: 0, plants: 0, bushes: 0, rocks: 0 };
   const add = (library, name, placement, kind) => {
     const anchor = createInstanceGroup(scene, world, library, name, placement, startPosition);
+    entries.push({ anchor, prefix: name });
     counts[kind] += 1;
     if (kind === "flowers" || kind === "plants" || kind === "bushes" || kind === "grass" || kind === "wispyGrass") {
       swayAnchors.push({ anchor, phase: random() * Math.PI * 2, kind });
@@ -371,7 +373,7 @@ function placeNature(scene, world, libraries, startPosition) {
   rockPlacements.forEach(([library, x, z, scale, rotation], index) => {
     add(libraries[library], `dreamy-rock-${index}`, { x: startPosition.x + x, z: startPosition.z + z, scale, rotation, yOffset: -0.14 }, "rocks");
   });
-  return { counts, swayAnchors };
+  return { counts, swayAnchors, entries };
 }
 
 function createInstanceGroup(scene, world, library, name, placement, startPosition) {
