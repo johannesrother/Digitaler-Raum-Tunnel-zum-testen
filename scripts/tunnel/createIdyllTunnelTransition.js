@@ -22,6 +22,7 @@ const RIFT_CLOSURE_FADE_RANGE = 0.42;
 const RIFT_VISIBILITY_EPSILON = 0.002;
 const ENTRY_ROUTE_EASE_DURATION = 0.75;
 const FLASH_DEBUG_DURATION_MS = 4000;
+const FLASH_DEBUG_MAX_EVENTS = 12000;
 
 /**
  * The only automatic motion in the experience. A parent transform carries
@@ -783,7 +784,7 @@ function createTunnelFlashDebug(scene, options, root, rift) {
     };
   }
 
-  const panel = document.createElement("pre");
+  const panel = document.createElement("section");
   panel.className = "tunnel-flash-debug-panel";
   panel.style.cssText = [
     "position:fixed",
@@ -792,15 +793,33 @@ function createTunnelFlashDebug(scene, options, root, rift) {
     "z-index:10000",
     "margin:0",
     "padding:10px",
-    "max-width:45vw",
+    "width:min(760px, calc(100vw - 24px))",
+    "max-height:calc(100vh - 24px)",
     "color:#f8f8f8",
     "background:rgba(0,0,0,0.78)",
     "border:1px solid rgba(255,255,255,0.35)",
     "border-radius:6px",
     "font:12px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace",
-    "pointer-events:none",
-    "white-space:pre-wrap",
+    "box-sizing:border-box",
+    "pointer-events:auto",
   ].join(";");
+  const status = document.createElement("pre");
+  status.style.cssText = "margin:0;white-space:pre-wrap;font:inherit";
+  const actions = document.createElement("div");
+  actions.style.cssText = "display:none;gap:8px;margin-top:10px;flex-wrap:wrap";
+  const report = document.createElement("pre");
+  report.style.cssText = [
+    "display:none",
+    "margin:10px 0 0",
+    "max-height:45vh",
+    "overflow:auto",
+    "padding:8px",
+    "border:1px solid rgba(255,255,255,0.2)",
+    "background:rgba(0,0,0,0.35)",
+    "white-space:pre-wrap",
+    "font:11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace",
+  ].join(";");
+  panel.append(status, actions, report);
   document.body.append(panel);
 
   const tunnelMeshes = new Set([
@@ -819,10 +838,12 @@ function createTunnelFlashDebug(scene, options, root, rift) {
   let active = false;
   let finished = false;
   let entryTime = 0;
+  let captureEndedAt = 0;
   let frame = 0;
   let previousState = null;
   let lastUnexpectedIdyll = "";
   let lastEvent = "waiting for tunnel entry";
+  const events = [];
 
   const timestamp = () => performance.now();
   const sinceEntry = () => active || finished ? timestamp() - entryTime : 0;
@@ -837,6 +858,122 @@ function createTunnelFlashDebug(scene, options, root, rift) {
     if (idyllMeshes.has(mesh)) return "idyll";
     return "technical";
   };
+  const formatValue = (input) => typeof input === "object" ? JSON.stringify(input) : String(input);
+  const isIdyllSubject = (subject) => [...idyllMeshes].some((mesh) => mesh.name === subject);
+  const isTunnelSubject = (subject) => [...tunnelMeshes].some((mesh) => mesh.name === subject);
+  const isLargeLightJump = (event) => {
+    if (event.operation !== "light.intensity") return false;
+    const oldIntensity = Number(event.oldValue);
+    const newIntensity = Number(event.newValue);
+    return Number.isFinite(oldIntensity) && Number.isFinite(newIntensity)
+      && Math.abs(newIntensity - oldIntensity) >= Math.max(0.2, Math.abs(oldIntensity) * 0.5);
+  };
+  const isMeshEnableOperation = (event) => event.operation === "mesh.setEnabled" || event.operation === "mesh.enabled";
+  const isSuspicious = (event) => (
+    event.operation === "FLASH DETECTOR"
+    || (isMeshEnableOperation(event) && isIdyllSubject(event.subject) && event.newValue === true)
+    || (isMeshEnableOperation(event) && isTunnelSubject(event.subject) && event.newValue === false)
+    || event.operation.includes("renderingGroupId")
+    || event.operation.includes("stencil")
+    || event.operation === "scene.clearColor"
+    || event.operation.includes("autoClear")
+    || event.operation.includes("parentEnabled")
+    || event.operation.includes("parentVisibility")
+    || event.operation === "material.alpha"
+    || isLargeLightJump(event)
+  );
+  const appendEvent = (event) => {
+    events.push({ ...event, suspicious: isSuspicious(event) });
+    if (events.length > FLASH_DEBUG_MAX_EVENTS) events.shift();
+  };
+  const summary = () => {
+    const matching = (predicate) => events.filter(predicate);
+    const idyllReenabled = matching((event) => isMeshEnableOperation(event)
+      && isIdyllSubject(event.subject) && event.newValue === true);
+    const tunnelDisabled = matching((event) => isMeshEnableOperation(event)
+      && isTunnelSubject(event.subject) && event.newValue === false);
+    const clearColorChanged = matching((event) => event.operation === "scene.clearColor");
+    const stencilOrGroupChanged = matching((event) => event.operation.includes("stencil")
+      || event.operation.includes("renderingGroupId") || event.operation.includes("autoClear"));
+    const largeLightJump = matching(isLargeLightJump);
+    const unexpectedMeshEnabled = matching((event) => event.operation === "FLASH DETECTOR");
+    const mostSuspicious = events.find((event) => event.suspicious);
+    return {
+      idyllReenabled: idyllReenabled.length > 0,
+      tunnelDisabled: tunnelDisabled.length > 0,
+      clearColorChanged: clearColorChanged.length > 0,
+      stencilOrGroupChanged: stencilOrGroupChanged.length > 0,
+      largeLightJump: largeLightJump.length > 0,
+      unexpectedMeshEnabled: unexpectedMeshEnabled.length > 0,
+      mostSuspicious,
+    };
+  };
+  const buildReport = () => {
+    const result = summary();
+    const yesNo = (condition) => condition ? "YES" : "NO";
+    const mostSuspicious = result.mostSuspicious
+      ? `+${(result.mostSuspicious.sinceTunnelEntryMs / 1000).toFixed(3)} s | frame ${result.mostSuspicious.frame} | ${result.mostSuspicious.operation} | ${result.mostSuspicious.subject}`
+      : "none";
+    const lines = [
+      "FLASH DEBUG SUMMARY",
+      `Idyll mesh re-enabled: ${yesNo(result.idyllReenabled)}`,
+      `Tunnel mesh disabled: ${yesNo(result.tunnelDisabled)}`,
+      `ClearColor changed: ${yesNo(result.clearColorChanged)}`,
+      `Stencil/render-group changed: ${yesNo(result.stencilOrGroupChanged)}`,
+      `Large light intensity change: ${yesNo(result.largeLightJump)}`,
+      `Unexpected mesh enabled: ${yesNo(result.unexpectedMeshEnabled)}`,
+      `Most suspicious event: ${mostSuspicious}`,
+      `Stored events: ${events.length}`,
+      "",
+      "FLASH DEBUG EVENT LOG",
+    ];
+    events.forEach((event) => {
+      lines.push(`${event.suspicious ? ">>> SUSPECT <<< " : ""}+${(event.sinceTunnelEntryMs / 1000).toFixed(3)} s | frame ${event.frame} | ${event.operation} | ${event.subject} | ${formatValue(event.oldValue)} → ${formatValue(event.newValue)}`);
+    });
+    return lines.join("\n");
+  };
+  const createButton = (label) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = label;
+    button.style.cssText = "border:1px solid #aeb9c0;border-radius:4px;padding:6px 8px;background:#f4f7f8;color:#182126;font:600 11px system-ui;cursor:pointer";
+    actions.append(button);
+    return button;
+  };
+  const copyButton = createButton("COPY DEBUG REPORT");
+  const downloadButton = createButton("DOWNLOAD DEBUG LOG");
+  const reportStatus = document.createElement("span");
+  reportStatus.style.cssText = "align-self:center;color:#c9dce7;font:11px system-ui";
+  actions.append(reportStatus);
+  const setReportStatus = (message) => {
+    reportStatus.textContent = message;
+  };
+  copyButton.addEventListener("click", async () => {
+    const text = buildReport();
+    try {
+      await navigator.clipboard.writeText(text);
+      setReportStatus("Copied.");
+    } catch {
+      const fallback = document.createElement("textarea");
+      fallback.value = text;
+      fallback.style.cssText = "position:fixed;opacity:0";
+      document.body.append(fallback);
+      fallback.select();
+      document.execCommand("copy");
+      fallback.remove();
+      setReportStatus("Copied.");
+    }
+  });
+  downloadButton.addEventListener("click", () => {
+    const blob = new Blob([buildReport()], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "tunnel-flash-debug-report.txt";
+    anchor.click();
+    URL.revokeObjectURL(url);
+    setReportStatus("Downloaded.");
+  });
   const record = (operation, subject, oldValue, newValue) => {
     if (!active || sinceEntry() > FLASH_DEBUG_DURATION_MS) return;
     const entry = {
@@ -849,6 +986,7 @@ function createTunnelFlashDebug(scene, options, root, rift) {
       newValue,
     };
     lastEvent = `${operation}: ${subject}`;
+    appendEvent(entry);
     console.info(`[TUNNEL DEBUG] ${JSON.stringify(entry)}`);
   };
   scene.setRenderingAutoClearDepthStencil = function instrumentedAutoClear(groupId, autoClear, depth, stencil) {
@@ -879,6 +1017,8 @@ function createTunnelFlashDebug(scene, options, root, rift) {
       visibility: mesh.visibility,
       renderingGroupId: mesh.renderingGroupId,
       material: mesh.material?.name ?? null,
+      parentEnabled: mesh.parent ? mesh.parent.isEnabled() : true,
+      parentVisibility: mesh.parent?.visibility ?? 1,
     }]));
     const materials = new Set([...scene.materials, ...scene.meshes.map((mesh) => mesh.material).filter(Boolean)]);
     const materialState = new Map([...materials].map((material) => [material.uniqueId, {
@@ -915,6 +1055,11 @@ function createTunnelFlashDebug(scene, options, root, rift) {
       }
     });
   };
+  const showReport = () => {
+    report.textContent = buildReport();
+    report.style.display = "block";
+    actions.style.display = "flex";
+  };
   const drawOverlay = (tunnelTime, tunnelRoute, riftApproachTime) => {
     const counts = { idyll: 0, rift: 0, tunnel: 0, whiteRoom: 0 };
     scene.meshes.forEach((mesh) => {
@@ -926,9 +1071,10 @@ function createTunnelFlashDebug(scene, options, root, rift) {
     const activeLights = scene.lights.filter((light) => light.isEnabled());
     const cameraPosition = scene.activeCamera?.globalPosition ?? root.getAbsolutePosition();
     const tunnelDistance = tunnelTravelTime(tunnelTime, tunnelRoute, riftApproachTime) * tunnelRoute.normalTunnelSpeed;
-    panel.textContent = [
+    const shownSinceEntry = active ? sinceEntry() : finished ? captureEndedAt : 0;
+    status.textContent = [
       "TUNNEL DEBUG",
-      `time since entry: ${active || finished ? (sinceEntry() / 1000).toFixed(3) : "waiting"} s`,
+      `time since entry: ${active || finished ? (shownSinceEntry / 1000).toFixed(3) : "waiting"} s`,
       `frame: ${active || finished ? frame : "-"}`,
       `enabled idyll meshes: ${counts.idyll}`,
       `enabled rift meshes: ${counts.rift}`,
@@ -949,17 +1095,24 @@ function createTunnelFlashDebug(scene, options, root, rift) {
       .sort();
     const signature = unexpected.join(" | ");
     if (signature && signature !== lastUnexpectedIdyll) {
-      console.error(`[FLASH DETECTOR] ${JSON.stringify({
+      const event = {
         performanceNow: Number(timestamp().toFixed(2)),
         sinceTunnelEntryMs: Number(sinceEntry().toFixed(2)),
         frame,
-        meshes: unexpected,
-      })}`);
+        operation: "FLASH DETECTOR",
+        subject: "idyll/environment mesh enabled",
+        oldValue: "disabled",
+        newValue: unexpected,
+      };
+      lastEvent = "FLASH DETECTOR: idyll/environment mesh enabled";
+      appendEvent(event);
+      console.error(`[FLASH DETECTOR] ${JSON.stringify(event)}`);
     }
     lastUnexpectedIdyll = signature;
   };
   const finish = () => {
     if (!active) return;
+    captureEndedAt = sinceEntry();
     active = false;
     finished = true;
     setEnabledRestorers.splice(0).forEach((restore) => restore());
@@ -970,6 +1123,7 @@ function createTunnelFlashDebug(scene, options, root, rift) {
       sinceTunnelEntryMs: Number(sinceEntry().toFixed(2)),
       frame,
     })}`);
+    showReport();
   };
 
   return {
@@ -996,7 +1150,7 @@ function createTunnelFlashDebug(scene, options, root, rift) {
         const nextState = currentState();
         compare(previousState.scene, nextState.scene, "scene", "scene", ["clearColor", "autoClear"]);
         nextState.meshes.forEach((next, key) => compare(previousState.meshes.get(key), next, "mesh", next.name, [
-          "enabled", "visibility", "renderingGroupId", "material",
+          "enabled", "visibility", "renderingGroupId", "material", "parentEnabled", "parentVisibility",
         ]));
         nextState.materials.forEach((next, key) => {
           const previous = previousState.materials.get(key);
