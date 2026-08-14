@@ -53,6 +53,8 @@ export function createOrganicTunnel(scene, options) {
   const route = createTunnelRoute(options.entrance);
   const { mesh, wallDeformation } = createTunnelShell(scene, route);
   const material = createTunnelMaterial(scene);
+  const riftEntryAlbedo = BABYLON.Color3.FromHexString("#84909a");
+  const settledTunnelAlbedo = BABYLON.Color3.FromHexString("#6d7780");
   mesh.material = material;
   mesh.isPickable = false;
   mesh.receiveShadows = false;
@@ -61,6 +63,8 @@ export function createOrganicTunnel(scene, options) {
   let impulse = 0;
   let activeTime = 0;
   let sequenceActive = false;
+  let entryTransition = 1;
+  let appliedEntryTransition = -1;
   let previousFrameTime = performance.now();
   const observer = scene.onBeforeRenderObservable.add(() => {
     const frameTime = performance.now();
@@ -70,7 +74,7 @@ export function createOrganicTunnel(scene, options) {
       activeTime = Math.min(activeTime + delta, TUNNEL_DURATION);
     }
     wallDeformation.update(activeTime);
-    updateTunnelLights(lights, activeTime, impulse);
+    updateTunnelLights(lights, activeTime, impulse, entryTransition);
     impulse = Math.max(0, impulse - delta * 2.9);
   });
 
@@ -96,15 +100,35 @@ export function createOrganicTunnel(scene, options) {
         const interval = getTunnelTwitchInterval(activeTime);
         nextImpulseAt += interval > 0 ? interval * (0.72 + ((nextImpulseAt * 1.73) % 0.58)) : 9;
       }
-      updateTunnelLights(lights, activeTime, impulse * (0.25 + look.detail * 0.75));
+      updateTunnelLights(lights, activeTime, impulse * (0.25 + look.detail * 0.75), entryTransition);
     },
     setSequenceActive(active) {
       sequenceActive = active;
       if (!active) {
         activeTime = 0;
         impulse = 0;
-        updateTunnelLights(lights, 0, 0);
+        updateTunnelLights(lights, 0, 0, entryTransition);
       }
+    },
+    setEntryTransition(amount) {
+      const nextTransition = BABYLON.Scalar.Clamp(amount, 0, 1);
+      if (Math.abs(nextTransition - appliedEntryTransition) < 0.002) {
+        return;
+      }
+      entryTransition = nextTransition;
+      appliedEntryTransition = nextTransition;
+      // The maps and mesh never change.  Only the first few metres inherit a
+      // little more of the rift's soft ambient response before settling into
+      // the established dark tunnel material.
+      material.albedoColor = BABYLON.Color3.Lerp(
+        riftEntryAlbedo,
+        settledTunnelAlbedo,
+        entryTransition,
+      );
+      material.roughness = BABYLON.Scalar.Lerp(0.72, 0.82, entryTransition);
+      material.environmentIntensity = BABYLON.Scalar.Lerp(0.16, 0.08, entryTransition);
+      material.specularIntensity = BABYLON.Scalar.Lerp(0.13, 0.1, entryTransition);
+      updateTunnelLights(lights, activeTime, impulse, entryTransition);
     },
     dispose() {
       scene.onBeforeRenderObservable.remove(observer);
@@ -545,14 +569,15 @@ function createTunnelLights(scene, meshes, route) {
   return { points, fill };
 }
 
-function updateTunnelLights(lights, time, impulse) {
+function updateTunnelLights(lights, time, impulse, entryTransition = 1) {
   const look = getTunnelLook(time);
   const phase = getTunnelPhase(time);
-  lights.fill.intensity = 0.08 + look.light * 0.2;
+  const riftLightInfluence = 1.16 - entryTransition * 0.16;
+  lights.fill.intensity = (0.08 + look.light * 0.2) * riftLightInfluence;
   lights.points.forEach((light, index) => {
     const proximity = 1 - Math.min(1, Math.abs(index / (lights.points.length - 1) - time / TUNNEL_DURATION) * 2.6);
     const pulse = index === 2 ? impulse * 0.16 : 0;
-    light.intensity = (0.44 + proximity * 0.9) * look.light + pulse;
+    light.intensity = ((0.44 + proximity * 0.9) * look.light + pulse) * riftLightInfluence;
     if (phase.id === "PEAK" && index >= 3) {
       light.diffuse = BABYLON.Color3.FromHexString("#67252b");
     }

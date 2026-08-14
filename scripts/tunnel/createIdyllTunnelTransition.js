@@ -17,7 +17,13 @@ const FINAL_PULL_START = 52;
 const FINAL_PULL_DURATION = TUNNEL_DURATION - FINAL_PULL_START;
 const FINAL_PULL_STRENGTH = 1.2;
 const RIFT_APPROACH_REMAINING_TIME = 3.4;
-const RIFT_CLOSE_DURATION = 1.4;
+// The visitor needs a short overlap after crossing: the opening remains
+// visible behind them while the same real tunnel has already taken over the
+// forward view.  Only then may the idyll dimension be removed from rendering.
+const RIFT_CLOSE_DURATION = 2;
+const IDYLL_HIDE_DELAY = RIFT_CLOSE_DURATION + 0.2;
+const TUNNEL_ENTRY_TRANSITION_DURATION = 4;
+const TUNNEL_REVEAL_FADE_DURATION = 0.8;
 const ENTRY_ROUTE_EASE_DURATION = 0.75;
 
 /**
@@ -47,7 +53,8 @@ export function createIdyllTunnelTransition(scene, options) {
   root.position.copyFrom(start);
   options.desktopCamera.parent = root;
   options.desktopCamera.position.set(0, options.desktopCamera.position.y - start.y, 0);
-  // The real tunnel stays out of the idyll until the rift itself is open.
+  // The real tunnel is prepared from scene creation, but stays stencil-masked
+  // until the shattered opening begins to reveal it.
   tunnelWorld.hide();
   options.tunnel.setSequenceActive(false);
 
@@ -62,13 +69,21 @@ export function createIdyllTunnelTransition(scene, options) {
     const tunnelTime = BABYLON.Scalar.Clamp(tunnelElapsed, 0, TUNNEL_DURATION);
     const hasEnteredTunnel = elapsed >= TUNNEL_START;
     const hasReachedWhiteRoom = tunnelElapsed >= TUNNEL_DURATION;
+    const entryTransition = smoothstep(tunnelTime / TUNNEL_ENTRY_TRANSITION_DURATION);
+    const tunnelOpacity = hasEnteredTunnel
+      ? 0.2 + 0.8 * smoothstep(tunnelTime / TUNNEL_REVEAL_FADE_DURATION)
+      : tunnelReveal;
 
     if (!portalClosed) {
-      tunnelWorld.reveal(tunnelReveal);
+      tunnelWorld.reveal(tunnelOpacity);
     }
     // Start the already visible tunnel's wall motion before the visitor
     // crosses the rift. This avoids a second visual "start" at entry.
     options.tunnel.setSequenceActive(tunnelReveal > 0.01 && !hasReachedWhiteRoom);
+    // The same PBR material and moving shell are visible through the rift.
+    // This only eases their response over the first ~5 m after the crossing;
+    // it never replaces material or geometry at the threshold.
+    options.tunnel.setEntryTransition(tunnelReveal > 0.01 ? entryTransition : 1);
     rift.update(elapsed, riftFormation, tunnelReveal, hasEnteredTunnel ? tunnelTime : -1);
 
     if (elapsed < IDYLL_TRAVEL_DURATION) {
@@ -87,7 +102,7 @@ export function createIdyllTunnelTransition(scene, options) {
       options.tunnel.update(tunnelTime);
       // Keep the old world for a short overlap while the rift closes around
       // the visitor instead of switching the environment at the crossing.
-      if (!idyllHidden && tunnelTime >= TUNNEL_BLEND_DURATION) {
+      if (!idyllHidden && tunnelTime >= IDYLL_HIDE_DELAY) {
         tunnelWorld.closePortal();
         portalClosed = true;
         idyllHidden = true;
