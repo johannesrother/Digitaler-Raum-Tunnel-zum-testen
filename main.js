@@ -29,6 +29,7 @@ async function startExperience() {
       removeResizeHandling();
       scene.metadata.transition.dispose();
       scene.metadata.tunnel.dispose();
+      scene.metadata.tunnelSound.dispose();
       scene.metadata.whiteRoomTone.dispose();
       scene.metadata.whiteRoom.dispose();
       scene.dispose();
