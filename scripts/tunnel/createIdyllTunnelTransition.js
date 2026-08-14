@@ -87,6 +87,7 @@ export function createIdyllTunnelTransition(scene, options) {
     // retired in this very frame rather than during a later overlap window.
     if (hasEnteredTunnel && !idyllHidden) {
       tunnelWorld.closePortal();
+      rift.closePortalMask();
       portalClosed = true;
       idyllHidden = true;
     }
@@ -449,6 +450,7 @@ function createSpacetimeRift(scene, entrance, tunnelStart, tunnelMesh, idyllWorl
   }]));
   let maskEnabled = false;
   let portalMaskEnabled = false;
+  let portalMaskPermanentlyClosed = false;
   [voidMesh.mesh, ...fragments.map(({ mesh }) => mesh), ...cracks, ...edgeHighlights].forEach((mesh) => { mesh.renderingGroupId = 3; });
   apertureMask.mesh.renderingGroupId = 0;
 
@@ -508,6 +510,18 @@ function createSpacetimeRift(scene, entrance, tunnelStart, tunnelMesh, idyllWorl
     setIdyllMask(enabled);
   };
 
+  const closePortalMask = () => {
+    if (portalMaskPermanentlyClosed) {
+      return;
+    }
+    // The tunnel world owns the post-entry render state. Restore every
+    // stencil/render-group setting once, then permanently prevent the
+    // lingering Rift visual animation from touching those settings again.
+    portalMaskPermanentlyClosed = true;
+    setPortalMask(false);
+    apertureMask.mesh.setEnabled(false);
+  };
+
   const setPoint = (positions, offset, x, y, depth) => {
     positions[offset] = center.x + lateral.x * x + forward.x * depth;
     positions[offset + 1] = center.y + y;
@@ -529,9 +543,11 @@ function createSpacetimeRift(scene, entrance, tunnelStart, tunnelMesh, idyllWorl
       // their eventual disable cannot produce a one-frame bright pop.
       const closureVisibility = smoothstep(closure / RIFT_CLOSURE_FADE_RANGE);
       if (formation <= 0 || closure <= 0.01) {
-        setPortalMask(false);
+        if (!portalMaskPermanentlyClosed) {
+          setPortalMask(false);
+          apertureMask.mesh.setEnabled(false);
+        }
         voidMesh.mesh.setEnabled(false);
-        apertureMask.mesh.setEnabled(false);
         fragments.forEach(({ mesh }) => mesh.setEnabled(false));
         cracks.forEach((mesh) => mesh.setEnabled(false));
         edgeHighlights.forEach((mesh) => mesh.setEnabled(false));
@@ -540,10 +556,12 @@ function createSpacetimeRift(scene, entrance, tunnelStart, tunnelMesh, idyllWorl
       const opening = smoothstep((elapsed - RIFT_TUNNEL_REVEAL_START) / (IDYLL_TRAVEL_DURATION - RIFT_TUNNEL_REVEAL_START));
       const apertureScale = (0.08 + formation * 0.78) * closure;
       updateAperture(voidMesh, apertureScale, -0.13);
-      updateAperture(apertureMask, apertureScale, -0.145);
+      if (!portalMaskPermanentlyClosed) {
+        updateAperture(apertureMask, apertureScale, -0.145);
+        setPortalMask(reveal > 0.01 && !isClosing);
+      }
       voidMesh.mesh.visibility = BABYLON.Scalar.Clamp(formation * (1 - opening * 1.1), 0, 1)
         * closureVisibility;
-      setPortalMask(reveal > 0.01 && !isClosing);
       voidMesh.mesh.setEnabled(voidMesh.mesh.visibility > RIFT_VISIBILITY_EPSILON);
       const breakProgress = smoothstep((formation - 0.22) / 0.78);
       fragments.forEach((fragment, index) => {
@@ -576,12 +594,13 @@ function createSpacetimeRift(scene, entrance, tunnelStart, tunnelMesh, idyllWorl
         mesh.setEnabled(mesh.visibility > RIFT_VISIBILITY_EPSILON);
       });
     },
+    closePortalMask,
     dispose() {
       edgeHighlights.forEach((mesh) => mesh.dispose());
       cracks.forEach((mesh) => mesh.dispose());
       fragments.forEach(({ mesh }) => mesh.dispose());
       voidMesh.mesh.dispose();
-      setPortalMask(false);
+      closePortalMask();
       apertureMask.mesh.dispose();
       fragmentMaterial.dispose();
       voidMaterial.dispose();
