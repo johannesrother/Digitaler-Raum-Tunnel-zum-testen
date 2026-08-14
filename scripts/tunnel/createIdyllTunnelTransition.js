@@ -18,7 +18,6 @@ const FINAL_PULL_DURATION = TUNNEL_DURATION - FINAL_PULL_START;
 const FINAL_PULL_STRENGTH = 1.2;
 const RIFT_APPROACH_REMAINING_TIME = 3.4;
 const RIFT_CLOSE_DURATION = 1.4;
-const PORTAL_WORLD_HANDOFF_TIME = RIFT_CLOSE_DURATION;
 const ENTRY_ROUTE_EASE_DURATION = 0.75;
 
 /**
@@ -81,11 +80,10 @@ export function createIdyllTunnelTransition(scene, options) {
     // Start the already visible tunnel's wall motion before the visitor
     // crosses the rift. This avoids a second visual "start" at entry.
     options.tunnel.setSequenceActive(tunnelReveal > 0.01 && !hasReachedWhiteRoom);
-    // The Rift's final cleanup used to run 0.6 s before the idyll world was
-    // removed. That left one render window where the closing portal could
-    // expose the idyll. Lock the already-entered tunnel first, then retire
-    // the idyll in the same frame before the Rift tears itself down.
-    if (hasEnteredTunnel && !idyllHidden && tunnelTime >= PORTAL_WORLD_HANDOFF_TIME) {
+    // The first frame inside the tunnel is a hard world boundary. The Rift
+    // disables its stencil portal as it begins closing, so the idyll must be
+    // retired in this very frame rather than during a later overlap window.
+    if (hasEnteredTunnel && !idyllHidden) {
       tunnelWorld.closePortal();
       portalClosed = true;
       idyllHidden = true;
