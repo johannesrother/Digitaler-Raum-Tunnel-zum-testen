@@ -495,15 +495,15 @@ function createTunnelMaterial(scene) {
   // The mesh UVs already travel 9.2 times along the route and 2.8 times
   // around the shell. A non-integer multiplier keeps the 1K detail dense
   // without making its source tile readable through the long tunnel.
-  const textureRepeat = 1.32;
+  const textureRepeat = 1.9;
   material.albedoTexture = createTexture(scene, `${textureRoot}/SkinAlien_19_1k_albedo.png`, textureRepeat, true);
   material.bumpTexture = createTexture(scene, `${textureRoot}/SkinAlien_19_1k_normal.png`, textureRepeat, false);
-  material.bumpTexture.level = 0.14;
+  material.bumpTexture.level = 0.36;
   // Babylon reads a grayscale roughness map through the green channel of its
   // metallic texture slot. Metallic contribution stays explicitly disabled.
   material.metallicTexture = createTexture(scene, `${textureRoot}/SkinAlien_19_1k_roughness.png`, textureRepeat, false);
   material.ambientTexture = createTexture(scene, `${textureRoot}/SkinAlien_19_1k_ambientOcclusion.png`, textureRepeat, false);
-  material.ambientTexture.level = 0.14;
+  material.ambientTexture.level = 0.1;
   material.useAmbientInGrayScale = true;
   material.useRoughnessFromMetallicTextureGreen = true;
   material.useMetallnessFromMetallicTextureBlue = false;
@@ -512,7 +512,7 @@ function createTunnelMaterial(scene) {
   // established dark, abstract character rather than reading as saturated skin.
   material.albedoColor = BABYLON.Color3.FromHexString("#6d7780");
   material.metallic = 0;
-  material.roughness = 0.94;
+  material.roughness = 0.82;
   material.environmentIntensity = 0.08;
   material.specularIntensity = 0.1;
   material.backFaceCulling = false;
@@ -521,11 +521,16 @@ function createTunnelMaterial(scene) {
 
 function createTunnelLights(scene, meshes, route) {
   const points = [0.01, 0.25, 0.52, 0.77, 0.94].map((progress, index) => {
-    const position = route.positionAt(progress);
+    const frame = route.frameAt(progress);
+    const position = frame.position.clone();
     position.y += EYE_HEIGHT;
+    // Slightly off-axis lights skim across the existing wall surface instead
+    // of illuminating it head-on, exposing normal-map pores and roughness.
+    position.addInPlace(frame.lateral.scale(index % 2 === 0 ? 0.52 : -0.46));
+    position.addInPlace(frame.vertical.scale(index % 3 === 0 ? 0.24 : -0.18));
     const light = new BABYLON.PointLight(`organic-tunnel-light-${index}`, position, scene);
     light.range = index === 0 ? 5.8 : 4.8;
-    light.intensity = 0.56;
+    light.intensity = 0.64;
     light.diffuse = index < 2
       ? BABYLON.Color3.FromHexString("#ffd1a3")
       : BABYLON.Color3.FromHexString("#8f9bad");
@@ -535,7 +540,7 @@ function createTunnelLights(scene, meshes, route) {
   const fill = new BABYLON.HemisphericLight("organic-tunnel-low-fill", BABYLON.Axis.Y, scene);
   fill.diffuse = BABYLON.Color3.FromHexString("#aeb7c4");
   fill.groundColor = BABYLON.Color3.FromHexString("#321d26");
-  fill.intensity = 0.2;
+  fill.intensity = 0.14;
   fill.includedOnlyMeshes.push(...meshes);
   return { points, fill };
 }
@@ -547,7 +552,7 @@ function updateTunnelLights(lights, time, impulse) {
   lights.points.forEach((light, index) => {
     const proximity = 1 - Math.min(1, Math.abs(index / (lights.points.length - 1) - time / TUNNEL_DURATION) * 2.6);
     const pulse = index === 2 ? impulse * 0.16 : 0;
-    light.intensity = (0.38 + proximity * 0.78) * look.light + pulse;
+    light.intensity = (0.44 + proximity * 0.9) * look.light + pulse;
     if (phase.id === "PEAK" && index >= 3) {
       light.diffuse = BABYLON.Color3.FromHexString("#67252b");
     }
