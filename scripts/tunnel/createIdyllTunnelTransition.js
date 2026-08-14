@@ -18,6 +18,8 @@ const FINAL_PULL_DURATION = TUNNEL_DURATION - FINAL_PULL_START;
 const FINAL_PULL_STRENGTH = 1.2;
 const RIFT_APPROACH_REMAINING_TIME = 3.4;
 const RIFT_CLOSE_DURATION = 1.4;
+const RIFT_CLOSURE_FADE_RANGE = 0.42;
+const RIFT_VISIBILITY_EPSILON = 0.002;
 const ENTRY_ROUTE_EASE_DURATION = 0.75;
 
 /**
@@ -522,6 +524,10 @@ function createSpacetimeRift(scene, entrance, tunnelStart, tunnelMesh, idyllWorl
     update(elapsed, formation, reveal, tunnelTime) {
       const isClosing = tunnelTime >= 0;
       const closure = isClosing ? 1 - smoothstep(tunnelTime / RIFT_CLOSE_DURATION) : 1;
+      // The Rift's geometry contracts across the full close duration. Fade
+      // its visible remnants only in the final part of that same curve, so
+      // their eventual disable cannot produce a one-frame bright pop.
+      const closureVisibility = smoothstep(closure / RIFT_CLOSURE_FADE_RANGE);
       if (formation <= 0 || closure <= 0.01) {
         setPortalMask(false);
         voidMesh.mesh.setEnabled(false);
@@ -535,14 +541,16 @@ function createSpacetimeRift(scene, entrance, tunnelStart, tunnelMesh, idyllWorl
       const apertureScale = (0.08 + formation * 0.78) * closure;
       updateAperture(voidMesh, apertureScale, -0.13);
       updateAperture(apertureMask, apertureScale, -0.145);
-      voidMesh.mesh.visibility = BABYLON.Scalar.Clamp(formation * (1 - opening * 1.1), 0, 1);
+      voidMesh.mesh.visibility = BABYLON.Scalar.Clamp(formation * (1 - opening * 1.1), 0, 1)
+        * closureVisibility;
       setPortalMask(reveal > 0.01 && !isClosing);
-      voidMesh.mesh.setEnabled(voidMesh.mesh.visibility > 0.01);
+      voidMesh.mesh.setEnabled(voidMesh.mesh.visibility > RIFT_VISIBILITY_EPSILON);
       const breakProgress = smoothstep((formation - 0.22) / 0.78);
       fragments.forEach((fragment, index) => {
-        const visibility = BABYLON.Scalar.Clamp(formation * (0.22 + opening * 0.78), 0, 0.86);
+        const visibility = BABYLON.Scalar.Clamp(formation * (0.22 + opening * 0.78), 0, 0.86)
+          * closureVisibility;
         fragment.mesh.visibility = visibility;
-        fragment.mesh.setEnabled(visibility > 0.01);
+        fragment.mesh.setEnabled(visibility > RIFT_VISIBILITY_EPSILON);
         fragment.mesh.scaling.setAll(0.18 + formation * 0.82);
         fragment.mesh.position.copyFrom(fragment.base
           .add(lateral.scale(fragment.lateralDrift * breakProgress))
@@ -552,12 +560,20 @@ function createSpacetimeRift(scene, entrance, tunnelStart, tunnelMesh, idyllWorl
         fragment.mesh.rotation.z = fragment.tilt + elapsed * fragment.spin * 0.5 * breakProgress;
       });
       cracks.forEach((mesh, index) => {
-        mesh.visibility = BABYLON.Scalar.Clamp(formation * (1 - opening * 0.7) * (index % 2 ? 0.85 : 1), 0, 0.88);
-        mesh.setEnabled(mesh.visibility > 0.01);
+        mesh.visibility = BABYLON.Scalar.Clamp(
+          formation * (1 - opening * 0.7) * (index % 2 ? 0.85 : 1),
+          0,
+          0.88,
+        ) * closureVisibility;
+        mesh.setEnabled(mesh.visibility > RIFT_VISIBILITY_EPSILON);
       });
       edgeHighlights.forEach((mesh, index) => {
-        mesh.visibility = BABYLON.Scalar.Clamp(formation * (0.28 + opening * 0.45) * (index % 2 ? 0.8 : 1), 0, 0.7);
-        mesh.setEnabled(mesh.visibility > 0.01);
+        mesh.visibility = BABYLON.Scalar.Clamp(
+          formation * (0.28 + opening * 0.45) * (index % 2 ? 0.8 : 1),
+          0,
+          0.7,
+        ) * closureVisibility;
+        mesh.setEnabled(mesh.visibility > RIFT_VISIBILITY_EPSILON);
       });
     },
     dispose() {
