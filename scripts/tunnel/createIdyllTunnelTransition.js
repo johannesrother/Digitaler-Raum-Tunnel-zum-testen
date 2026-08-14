@@ -21,6 +21,7 @@ const RIFT_CLOSE_DURATION = 1.4;
 const RIFT_CLOSURE_FADE_RANGE = 0.42;
 const RIFT_VISIBILITY_EPSILON = 0.002;
 const ENTRY_ROUTE_EASE_DURATION = 0.75;
+const FLASH_DEBUG_DURATION_MS = 4000;
 
 /**
  * The only automatic motion in the experience. A parent transform carries
@@ -41,6 +42,7 @@ export function createIdyllTunnelTransition(scene, options) {
   );
   const riftApproachTime = Math.max(0.5, tunnelRoute.entryTime - RIFT_APPROACH_REMAINING_TIME);
   const debug = createDebugPanel();
+  const flashDebug = createTunnelFlashDebug(scene, options, root, rift);
   let elapsed = 0;
   let xrCamera = null;
   let previousWorldHidden = false;
@@ -61,6 +63,7 @@ export function createIdyllTunnelTransition(scene, options) {
   options.tunnel.setSequenceActive(false);
 
   const observer = scene.onBeforeRenderObservable.add(() => {
+    flashDebug.nextFrame();
     const frameTime = performance.now();
     const delta = Math.min((frameTime - previousFrameTime) / 1000, 0.04);
     previousFrameTime = frameTime;
@@ -74,6 +77,7 @@ export function createIdyllTunnelTransition(scene, options) {
 
     if (hasEnteredTunnel && !tunnelEntryPrepared) {
       tunnelEntryPrepared = true;
+      flashDebug.start();
       options.onTunnelEntry?.();
     }
     if (!portalClosed) {
@@ -132,6 +136,7 @@ export function createIdyllTunnelTransition(scene, options) {
       }
     }
     debug.update(elapsed, tunnelTime, tunnelRoute, hasEnteredTunnel, riftFormation, riftApproachTime);
+    flashDebug.capture(tunnelTime, tunnelRoute, riftApproachTime);
   });
 
   return {
@@ -161,6 +166,7 @@ export function createIdyllTunnelTransition(scene, options) {
         xrCamera.parent = null;
       }
       debug.dispose();
+      flashDebug.dispose();
       rift.dispose();
       root.dispose();
     },
@@ -595,6 +601,15 @@ function createSpacetimeRift(scene, entrance, tunnelStart, tunnelMesh, idyllWorl
       });
     },
     closePortalMask,
+    getVisualMeshes() {
+      return [
+        voidMesh.mesh,
+        apertureMask.mesh,
+        ...fragments.map(({ mesh }) => mesh),
+        ...cracks,
+        ...edgeHighlights,
+      ];
+    },
     dispose() {
       edgeHighlights.forEach((mesh) => mesh.dispose());
       cracks.forEach((mesh) => mesh.dispose());
@@ -750,6 +765,260 @@ function normalizeAngle(value) {
 function smoothstep(value) {
   const clamped = BABYLON.Scalar.Clamp(value, 0, 1);
   return clamped * clamped * (3 - 2 * clamped);
+}
+
+/**
+ * Opt-in, temporary instrumentation for the post-rift flash investigation.
+ * It observes state only when ?debugFlash=1 is present and never changes a
+ * rendering value itself. The hooks are restored after the four-second window.
+ */
+function createTunnelFlashDebug(scene, options, root, rift) {
+  const enabled = new URLSearchParams(window.location.search).has("debugFlash");
+  if (!enabled) {
+    return {
+      nextFrame() {},
+      start() {},
+      capture() {},
+      dispose() {},
+    };
+  }
+
+  const panel = document.createElement("pre");
+  panel.className = "tunnel-flash-debug-panel";
+  panel.style.cssText = [
+    "position:fixed",
+    "top:12px",
+    "left:12px",
+    "z-index:10000",
+    "margin:0",
+    "padding:10px",
+    "max-width:45vw",
+    "color:#f8f8f8",
+    "background:rgba(0,0,0,0.78)",
+    "border:1px solid rgba(255,255,255,0.35)",
+    "border-radius:6px",
+    "font:12px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace",
+    "pointer-events:none",
+    "white-space:pre-wrap",
+  ].join(";");
+  document.body.append(panel);
+
+  const tunnelMeshes = new Set([
+    options.tunnel.mesh,
+    options.tunnelEntrance?.portal,
+    options.tunnelEntrance?.shell,
+    options.tunnelEntrance?.floor,
+    options.tunnelEntrance?.fade,
+  ].filter(Boolean));
+  const riftMeshes = new Set(rift.getVisualMeshes());
+  const idyllMeshes = new Set(options.idyllWorldMeshes);
+  const setEnabledRestorers = [];
+  const lightRestorers = [];
+  const originalAutoClear = scene.setRenderingAutoClearDepthStencil;
+  const renderingClearState = new Map();
+  let active = false;
+  let finished = false;
+  let entryTime = 0;
+  let frame = 0;
+  let previousState = null;
+  let lastUnexpectedIdyll = "";
+  let lastEvent = "waiting for tunnel entry";
+
+  const timestamp = () => performance.now();
+  const sinceEntry = () => active || finished ? timestamp() - entryTime : 0;
+  const colorValue = (color) => color
+    ? [color.r, color.g, color.b, color.a].map((value) => Number(value ?? 1).toFixed(3)).join(", ")
+    : "none";
+  const value = (input) => typeof input === "object" ? JSON.stringify(input) : String(input);
+  const meshCategory = (mesh) => {
+    if (tunnelMeshes.has(mesh)) return "tunnel";
+    if (riftMeshes.has(mesh) || mesh.name.startsWith("spacetime-rift-")) return "rift";
+    if (mesh.name.startsWith("white-room-")) return "white-room";
+    if (idyllMeshes.has(mesh)) return "idyll";
+    return "technical";
+  };
+  const record = (operation, subject, oldValue, newValue) => {
+    if (!active || sinceEntry() > FLASH_DEBUG_DURATION_MS) return;
+    const entry = {
+      performanceNow: Number(timestamp().toFixed(2)),
+      sinceTunnelEntryMs: Number(sinceEntry().toFixed(2)),
+      frame,
+      operation,
+      subject,
+      oldValue,
+      newValue,
+    };
+    lastEvent = `${operation}: ${subject}`;
+    console.info(`[TUNNEL DEBUG] ${JSON.stringify(entry)}`);
+  };
+  scene.setRenderingAutoClearDepthStencil = function instrumentedAutoClear(groupId, autoClear, depth, stencil) {
+    const oldValue = renderingClearState.get(groupId) ?? "unobserved";
+    const newValue = { autoClear, depth, stencil };
+    renderingClearState.set(groupId, newValue);
+    record("scene.setRenderingAutoClearDepthStencil", `rendering group ${groupId}`, oldValue, newValue);
+    return originalAutoClear.call(scene, groupId, autoClear, depth, stencil);
+  };
+  const wrapSetEnabled = (target, kind, restorers) => {
+    if (!target?.setEnabled) return;
+    const original = target.setEnabled;
+    target.setEnabled = function instrumentedSetEnabled(nextEnabled) {
+      const oldEnabled = this.isEnabled();
+      const result = original.call(this, nextEnabled);
+      const newEnabled = this.isEnabled();
+      if (oldEnabled !== newEnabled) {
+        record(`${kind}.setEnabled`, this.name, oldEnabled, newEnabled);
+      }
+      return result;
+    };
+    restorers.push(() => { target.setEnabled = original; });
+  };
+  const currentState = () => {
+    const meshState = new Map(scene.meshes.map((mesh) => [mesh.uniqueId, {
+      name: mesh.name,
+      enabled: mesh.isEnabled(),
+      visibility: mesh.visibility,
+      renderingGroupId: mesh.renderingGroupId,
+      material: mesh.material?.name ?? null,
+    }]));
+    const materials = new Set([...scene.materials, ...scene.meshes.map((mesh) => mesh.material).filter(Boolean)]);
+    const materialState = new Map([...materials].map((material) => [material.uniqueId, {
+      name: material.name,
+      alpha: material.alpha,
+      stencil: {
+        enabled: material.stencil?.enabled,
+        func: material.stencil?.func,
+        funcRef: material.stencil?.funcRef,
+        funcMask: material.stencil?.funcMask,
+      },
+    }]));
+    const lightState = new Map(scene.lights.map((light) => [light.uniqueId, {
+      name: light.name,
+      enabled: light.isEnabled(),
+      intensity: light.intensity,
+    }]));
+    return {
+      scene: {
+        clearColor: colorValue(scene.clearColor),
+        autoClear: scene.autoClear,
+      },
+      meshes: meshState,
+      materials: materialState,
+      lights: lightState,
+    };
+  };
+  const compare = (previous, next, operation, subject, fields) => {
+    fields.forEach((field) => {
+      const oldValue = previous?.[field];
+      const newValue = next?.[field];
+      if (value(oldValue) !== value(newValue)) {
+        record(`${operation}.${field}`, subject, oldValue, newValue);
+      }
+    });
+  };
+  const drawOverlay = (tunnelTime, tunnelRoute, riftApproachTime) => {
+    const counts = { idyll: 0, rift: 0, tunnel: 0, whiteRoom: 0 };
+    scene.meshes.forEach((mesh) => {
+      if (!mesh.isEnabled()) return;
+      const category = meshCategory(mesh);
+      if (category === "white-room") counts.whiteRoom += 1;
+      else if (Object.hasOwn(counts, category)) counts[category] += 1;
+    });
+    const activeLights = scene.lights.filter((light) => light.isEnabled());
+    const cameraPosition = scene.activeCamera?.globalPosition ?? root.getAbsolutePosition();
+    const tunnelDistance = tunnelTravelTime(tunnelTime, tunnelRoute, riftApproachTime) * tunnelRoute.normalTunnelSpeed;
+    panel.textContent = [
+      "TUNNEL DEBUG",
+      `time since entry: ${active || finished ? (sinceEntry() / 1000).toFixed(3) : "waiting"} s`,
+      `frame: ${active || finished ? frame : "-"}`,
+      `enabled idyll meshes: ${counts.idyll}`,
+      `enabled rift meshes: ${counts.rift}`,
+      `enabled tunnel meshes: ${counts.tunnel}`,
+      `enabled white-room meshes: ${counts.whiteRoom}`,
+      `active lights: ${activeLights.length} (${activeLights.map((light) => light.name).join(", ") || "none"})`,
+      `scene clearColor: ${colorValue(scene.clearColor)}`,
+      `camera position: ${cameraPosition.x.toFixed(2)}, ${cameraPosition.y.toFixed(2)}, ${cameraPosition.z.toFixed(2)}`,
+      `tunnel progress: ${tunnelTime.toFixed(3)} s / ${TUNNEL_DURATION} s (${tunnelDistance.toFixed(2)} m)`,
+      `last event: ${lastEvent}`,
+      finished ? "capture complete (4.0 s)" : "capture armed",
+    ].join("\n");
+  };
+  const detectUnexpectedIdyll = () => {
+    const unexpected = scene.meshes
+      .filter((mesh) => mesh.isEnabled() && meshCategory(mesh) === "idyll")
+      .map((mesh) => mesh.name)
+      .sort();
+    const signature = unexpected.join(" | ");
+    if (signature && signature !== lastUnexpectedIdyll) {
+      console.error(`[FLASH DETECTOR] ${JSON.stringify({
+        performanceNow: Number(timestamp().toFixed(2)),
+        sinceTunnelEntryMs: Number(sinceEntry().toFixed(2)),
+        frame,
+        meshes: unexpected,
+      })}`);
+    }
+    lastUnexpectedIdyll = signature;
+  };
+  const finish = () => {
+    if (!active) return;
+    active = false;
+    finished = true;
+    setEnabledRestorers.splice(0).forEach((restore) => restore());
+    lightRestorers.splice(0).forEach((restore) => restore());
+    scene.setRenderingAutoClearDepthStencil = originalAutoClear;
+    console.info(`[TUNNEL DEBUG] capture complete ${JSON.stringify({
+      performanceNow: Number(timestamp().toFixed(2)),
+      sinceTunnelEntryMs: Number(sinceEntry().toFixed(2)),
+      frame,
+    })}`);
+  };
+
+  return {
+    nextFrame() {
+      if (active) frame += 1;
+    },
+    start() {
+      if (active || finished) return;
+      active = true;
+      entryTime = timestamp();
+      frame = 0;
+      previousState = currentState();
+      scene.meshes.forEach((mesh) => wrapSetEnabled(mesh, "mesh", setEnabledRestorers));
+      scene.lights.forEach((light) => wrapSetEnabled(light, "light", lightRestorers));
+      console.info(`[TUNNEL DEBUG] tunnel-entry capture started ${JSON.stringify({
+        performanceNow: Number(entryTime.toFixed(2)),
+        sinceTunnelEntryMs: 0,
+        frame,
+      })}`);
+    },
+    capture(tunnelTime, tunnelRoute, riftApproachTime) {
+      if (!active && !finished) return;
+      if (active) {
+        const nextState = currentState();
+        compare(previousState.scene, nextState.scene, "scene", "scene", ["clearColor", "autoClear"]);
+        nextState.meshes.forEach((next, key) => compare(previousState.meshes.get(key), next, "mesh", next.name, [
+          "enabled", "visibility", "renderingGroupId", "material",
+        ]));
+        nextState.materials.forEach((next, key) => {
+          const previous = previousState.materials.get(key);
+          compare(previous, next, "material", next.name, ["alpha"]);
+          compare(previous?.stencil, next.stencil, "material.stencil", next.name, [
+            "enabled", "func", "funcRef", "funcMask",
+          ]);
+        });
+        nextState.lights.forEach((next, key) => compare(previousState.lights.get(key), next, "light", next.name, [
+          "enabled", "intensity",
+        ]));
+        previousState = nextState;
+        detectUnexpectedIdyll();
+        if (sinceEntry() >= FLASH_DEBUG_DURATION_MS) finish();
+      }
+      drawOverlay(tunnelTime, tunnelRoute, riftApproachTime);
+    },
+    dispose() {
+      finish();
+      panel.remove();
+    },
+  };
 }
 
 function createDebugPanel() {
