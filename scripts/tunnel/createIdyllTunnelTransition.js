@@ -18,6 +18,7 @@ const FINAL_PULL_DURATION = TUNNEL_DURATION - FINAL_PULL_START;
 const FINAL_PULL_STRENGTH = 1.2;
 const RIFT_APPROACH_REMAINING_TIME = 3.4;
 const RIFT_CLOSE_DURATION = 1.4;
+const PORTAL_WORLD_HANDOFF_TIME = RIFT_CLOSE_DURATION;
 const ENTRY_ROUTE_EASE_DURATION = 0.75;
 
 /**
@@ -80,6 +81,15 @@ export function createIdyllTunnelTransition(scene, options) {
     // Start the already visible tunnel's wall motion before the visitor
     // crosses the rift. This avoids a second visual "start" at entry.
     options.tunnel.setSequenceActive(tunnelReveal > 0.01 && !hasReachedWhiteRoom);
+    // The Rift's final cleanup used to run 0.6 s before the idyll world was
+    // removed. That left one render window where the closing portal could
+    // expose the idyll. Lock the already-entered tunnel first, then retire
+    // the idyll in the same frame before the Rift tears itself down.
+    if (hasEnteredTunnel && !idyllHidden && tunnelTime >= PORTAL_WORLD_HANDOFF_TIME) {
+      tunnelWorld.closePortal();
+      portalClosed = true;
+      idyllHidden = true;
+    }
     rift.update(elapsed, riftFormation, tunnelReveal, hasEnteredTunnel ? tunnelTime : -1);
 
     if (elapsed < IDYLL_TRAVEL_DURATION) {
@@ -96,13 +106,6 @@ export function createIdyllTunnelTransition(scene, options) {
         delta,
       );
       options.tunnel.update(tunnelTime);
-      // Keep the old world for a short overlap while the rift closes around
-      // the visitor instead of switching the environment at the crossing.
-      if (!idyllHidden && tunnelTime >= TUNNEL_BLEND_DURATION) {
-        tunnelWorld.closePortal();
-        portalClosed = true;
-        idyllHidden = true;
-      }
       options.whiteRoom.preview(smoothstep((tunnelTime - WHITE_PREVIEW_START) / (TUNNEL_DURATION - WHITE_PREVIEW_START)));
     } else {
       activateWhiteRoom(options, root);
@@ -796,6 +799,10 @@ function createTunnelWorldGroup(options) {
       entrance.daylight?.setEnabled(amount > 0.48);
     },
     closePortal() {
+      // Once crossed, this is a hard invariant: Rift teardown or later
+      // cleanup may never leave a frame without the real tunnel renderable.
+      options.tunnel.setEnabled(true);
+      options.tunnel.mesh.visibility = originalVisibility.get(options.tunnel.mesh);
       setEntranceEnabled(false);
       entranceMeshes.forEach((mesh) => {
         mesh.visibility = originalVisibility.get(mesh);
