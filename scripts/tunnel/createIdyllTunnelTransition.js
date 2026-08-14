@@ -29,7 +29,7 @@ export function createIdyllTunnelTransition(scene, options) {
   const start = options.startPosition.clone();
   const entry = createEntryPath(start, options.entrance, options.initialForward, options.tunnel.route.start);
   const tunnelRoute = createTunnelTravelRoute(entry, options.tunnel.route, options.entrance.center);
-  const tunnelWorld = createTunnelWorldGroup(options);
+  const tunnelWorld = createTunnelWorldGroup(scene, options);
   const rift = createSpacetimeRift(
     scene,
     options.entrance,
@@ -765,7 +765,7 @@ function createDebugPanel() {
  * shell, the previously visible ribbed interior, floor/fade helpers and their
  * lights. Disabled meshes do not render or cast shadows during the idyll.
  */
-function createTunnelWorldGroup(options) {
+function createTunnelWorldGroup(scene, options) {
   const entrance = options.tunnelEntrance;
   const entranceMeshes = [entrance.portal, entrance.shell, entrance.floor, entrance.fade]
     .filter(Boolean);
@@ -801,6 +801,11 @@ function createTunnelWorldGroup(options) {
       // cleanup may never leave a frame without the real tunnel renderable.
       options.tunnel.setEnabled(true);
       options.tunnel.mesh.visibility = originalVisibility.get(options.tunnel.mesh);
+      // The idyll's sky mesh is disabled below, but Babylon still clears the
+      // frame with the idyll's pale blue clear color. During the Rift stencil
+      // handoff that background can briefly be exposed through a gap, which
+      // reads as an idyll flash even with every idyll mesh disabled.
+      scene.clearColor = new BABYLON.Color4(0.006, 0.009, 0.014, 1);
       setEntranceEnabled(false);
       entranceMeshes.forEach((mesh) => {
         mesh.visibility = originalVisibility.get(mesh);
