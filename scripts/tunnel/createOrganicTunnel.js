@@ -14,8 +14,15 @@ const PATH_SAMPLES = 188;
 const PROFILE_SIDES = 40;
 const WALL_DEFORMATION_TARGETS = 6;
 const MINIMUM_CLEAR_RADIUS = 0.58;
-const GRAZING_LIGHT_BOOST = 1.14;
-const FILL_LIGHT_BOOST = 1.04;
+const GRAZING_LIGHT_BOOST = 1.18;
+const FILL_LIGHT_BOOST = 1.06;
+const GRAZING_LIGHT_RIGS = [
+  { ahead: -1.4, side: 0.62, height: 0.24, range: 6.8, intensity: 0.72, color: "#ffd1a3" },
+  { ahead: 2.6, side: -0.66, height: -0.16, range: 8.6, intensity: 1.02, color: "#ffd1a3" },
+  { ahead: 6.5, side: 0.58, height: 0.12, range: 10.2, intensity: 1.12, color: "#9fadc0" },
+  { ahead: 11.4, side: -0.56, height: 0.28, range: 11.6, intensity: 0.96, color: "#8f9bad" },
+  { ahead: 15.5, side: 0.48, height: -0.2, range: 10.4, intensity: 0.7, color: "#8f9bad" },
+];
 
 // Six broad, asymmetric cross-section families establish chambers, compressed
 // shoulders and deep opposing valleys. They are deliberately uneven in length
@@ -72,7 +79,7 @@ export function createOrganicTunnel(scene, options) {
       activeTime = Math.min(activeTime + delta, TUNNEL_DURATION);
     }
     wallDeformation.update(activeTime);
-    updateTunnelLights(lights, activeTime, impulse);
+    updateTunnelLights(lights, route, activeTime, impulse);
     impulse = Math.max(0, impulse - delta * 2.9);
   });
 
@@ -98,14 +105,14 @@ export function createOrganicTunnel(scene, options) {
         const interval = getTunnelTwitchInterval(activeTime);
         nextImpulseAt += interval > 0 ? interval * (0.72 + ((nextImpulseAt * 1.73) % 0.58)) : 9;
       }
-      updateTunnelLights(lights, activeTime, impulse * (0.25 + look.detail * 0.75));
+      updateTunnelLights(lights, route, activeTime, impulse * (0.25 + look.detail * 0.75));
     },
     setSequenceActive(active) {
       sequenceActive = active;
       if (!active) {
         activeTime = 0;
         impulse = 0;
-        updateTunnelLights(lights, 0, 0);
+        updateTunnelLights(lights, route, 0, 0);
       }
     },
     dispose() {
@@ -522,41 +529,54 @@ function createTunnelMaterial(scene) {
 }
 
 function createTunnelLights(scene, meshes, route) {
-  const points = [0.01, 0.25, 0.52, 0.77, 0.94].map((progress, index) => {
-    const frame = route.frameAt(progress);
+  const points = GRAZING_LIGHT_RIGS.map((rig, index) => {
+    const frame = route.frameAt(0);
     const position = frame.position.clone();
     position.y += EYE_HEIGHT;
-    // Slightly off-axis lights skim across the existing wall surface instead
-    // of illuminating it head-on, exposing normal-map pores and roughness.
-    position.addInPlace(frame.lateral.scale(index % 2 === 0 ? 0.52 : -0.46));
-    position.addInPlace(frame.vertical.scale(index % 3 === 0 ? 0.24 : -0.18));
+    // Each rig is later kept alongside the moving route position.  Starting
+    // it off-axis ensures it rakes across the wall instead of becoming a
+    // forward-facing headlight.
+    position.addInPlace(frame.lateral.scale(rig.side));
+    position.addInPlace(frame.vertical.scale(rig.height));
     const light = new BABYLON.PointLight(`organic-tunnel-light-${index}`, position, scene);
-    light.range = index === 0 ? 5.8 : 4.8;
-    light.intensity = 0.73;
-    light.diffuse = index < 2
-      ? BABYLON.Color3.FromHexString("#ffd1a3")
-      : BABYLON.Color3.FromHexString("#8f9bad");
+    light.range = rig.range;
+    light.intensity = rig.intensity;
+    light.diffuse = BABYLON.Color3.FromHexString(rig.color);
     light.includedOnlyMeshes.push(...meshes);
     return light;
   });
   const fill = new BABYLON.HemisphericLight("organic-tunnel-low-fill", BABYLON.Axis.Y, scene);
   fill.diffuse = BABYLON.Color3.FromHexString("#aeb7c4");
   fill.groundColor = BABYLON.Color3.FromHexString("#321d26");
-  fill.intensity = 0.146;
+  fill.intensity = 0.18;
   fill.includedOnlyMeshes.push(...meshes);
-  return { points, fill };
+  return { points, fill, rigs: GRAZING_LIGHT_RIGS };
 }
 
-function updateTunnelLights(lights, time, impulse) {
+function updateTunnelLights(lights, route, time, impulse) {
   const look = getTunnelLook(time);
   const phase = getTunnelPhase(time);
-  lights.fill.intensity = (0.08 + look.light * 0.2) * FILL_LIGHT_BOOST;
+  // Keep the fill deliberately low: it only preserves a trace of wall detail
+  // in the deepest shadows, while the moving side lights define the relief.
+  lights.fill.intensity = (0.14 + look.light * 0.13) * FILL_LIGHT_BOOST;
   lights.points.forEach((light, index) => {
-    const proximity = 1 - Math.min(1, Math.abs(index / (lights.points.length - 1) - time / TUNNEL_DURATION) * 2.6);
+    const rig = lights.rigs[index];
+    const lightTime = BABYLON.Scalar.Clamp(time + rig.ahead, 0, TUNNEL_DURATION);
+    const frame = route.frameAt(lightTime / TUNNEL_DURATION);
+    const sideOffset = Math.max(0.34, getTunnelDiameter(lightTime) * 0.29) * Math.sign(rig.side);
+    light.position.copyFrom(frame.position);
+    light.position.y += EYE_HEIGHT;
+    light.position.addInPlace(frame.lateral.scale(sideOffset));
+    light.position.addInPlace(frame.vertical.scale(rig.height));
+    // A modest lower bound keeps the fins readable through the late, dark
+    // phases without flattening the tunnel into an evenly lit tube.
+    const visibility = 0.66 + look.light * 0.42;
     const pulse = index === 2 ? impulse * 0.16 : 0;
-    light.intensity = (0.44 + proximity * 0.9) * look.light * GRAZING_LIGHT_BOOST + pulse;
+    light.intensity = rig.intensity * visibility * GRAZING_LIGHT_BOOST + pulse;
     if (phase.id === "PEAK" && index >= 3) {
       light.diffuse = BABYLON.Color3.FromHexString("#67252b");
+    } else {
+      light.diffuse = BABYLON.Color3.FromHexString(rig.color);
     }
   });
 }
