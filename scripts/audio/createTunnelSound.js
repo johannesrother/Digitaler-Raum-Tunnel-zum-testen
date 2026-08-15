@@ -8,19 +8,20 @@ const TUNNEL_SOUND_URL = new URL(
 
 /** A single global HTML audio element for the tunnel soundtrack. */
 export function createTunnelSound() {
-  const tunnelAudio = new Audio(TUNNEL_SOUND_URL);
+  const tunnelAudio = new Audio(TUNNEL_SOUND_URL.href);
   tunnelAudio.preload = "auto";
   tunnelAudio.loop = false;
   tunnelAudio.volume = TUNNEL_SOUND_VOLUME;
   tunnelAudio.load();
+  console.info("TUNNEL WAV URL:", TUNNEL_SOUND_URL.href);
 
   let unlocked = false;
   let unlocking = false;
   let started = false;
   let stopTimer = null;
 
-  tunnelAudio.addEventListener("loadeddata", () => {
-    console.info("TUNNEL WAV LOADED");
+  tunnelAudio.addEventListener("canplay", () => {
+    console.info("TUNNEL WAV CANPLAY");
   }, { once: true });
 
   const stop = () => {
@@ -76,11 +77,11 @@ export function createTunnelSound() {
       tunnelAudio.currentTime = 0;
       tunnelAudio.volume = TUNNEL_SOUND_VOLUME;
       tunnelAudio.play().then(() => {
-        console.info("TUNNEL WAV PLAY START");
+        console.info("TUNNEL WAV PLAY OK");
         stopTimer = window.setTimeout(stop, TUNNEL_SOUND_DURATION * 1000);
       }).catch((error) => {
         started = false;
-        console.error("TUNNEL WAV PLAY ERROR", error);
+        console.error("TUNNEL WAV ERROR:", error);
       });
     },
     dispose() {
