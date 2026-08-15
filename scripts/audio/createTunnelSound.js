@@ -179,6 +179,7 @@ export function createTunnelSound() {
         console.error("TUNNEL WAV ERROR:", error);
       });
     },
+    stop,
     dispose() {
       removeUnlockListeners();
       stop();

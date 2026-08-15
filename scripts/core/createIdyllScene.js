@@ -48,8 +48,8 @@ export async function createIdyllScene(engine, canvas) {
   exitDirection.y = 0;
   exitDirection.normalize();
   const whiteRoom = createWhiteRoom(scene, tunnelExit, exitDirection);
-  const whiteRoomTone = createWhiteRoomTone();
   const tunnelSound = createTunnelSound();
+  const whiteRoomTone = createWhiteRoomTone({ onActivate: tunnelSound.stop });
   const transition = createIdyllTunnelTransition(scene, {
     startPosition: dreamyIdyll.startPosition,
     entrance: environment.architecture.entrance,

@@ -1,61 +1,73 @@
-/**
- * Web Audio needs a user gesture. The oscillator is therefore armed silently
- * on the first interaction and fades to one comfortable sine tone only when
- * the White Room begins.
- */
-export function createWhiteRoomTone() {
-  let context = null;
-  let gain = null;
-  let oscillator = null;
+const WHITE_ROOM_SOUND_VOLUME = 0.8;
+const WHITE_ROOM_SOUND_URL = new URL(
+  "../../assets/sounds/82078__kapanoush__sinus-aditive.aiff",
+  import.meta.url,
+);
+
+/** Reuses the tunnel's simple global HTML-audio playback approach. */
+export function createWhiteRoomTone({ onActivate } = {}) {
+  const whiteRoomAudio = new Audio(WHITE_ROOM_SOUND_URL.href);
+  whiteRoomAudio.preload = "auto";
+  whiteRoomAudio.loop = false;
+  whiteRoomAudio.volume = WHITE_ROOM_SOUND_VOLUME;
+  whiteRoomAudio.load();
+
+  let unlocked = false;
+  let unlocking = false;
   let activated = false;
 
-  const arm = async () => {
-    if (context) {
+  const unlock = async () => {
+    if (unlocked || unlocking) {
       return;
     }
-    const AudioContext = window.AudioContext || window.webkitAudioContext;
-    if (!AudioContext) {
-      return;
+    unlocking = true;
+    try {
+      whiteRoomAudio.volume = 0;
+      await whiteRoomAudio.play();
+      whiteRoomAudio.pause();
+      whiteRoomAudio.currentTime = 0;
+      whiteRoomAudio.volume = WHITE_ROOM_SOUND_VOLUME;
+      unlocked = true;
+      removeUnlockListeners();
+    } catch {
+      whiteRoomAudio.volume = WHITE_ROOM_SOUND_VOLUME;
+    } finally {
+      unlocking = false;
     }
-    context = new AudioContext();
-    gain = context.createGain();
-    gain.gain.value = 0;
-    oscillator = context.createOscillator();
-    oscillator.type = "sine";
-    oscillator.frequency.value = 196;
-    oscillator.connect(gain).connect(context.destination);
-    oscillator.start();
-    await context.resume();
   };
 
-  window.addEventListener("pointerdown", arm, { once: true });
-  window.addEventListener("keydown", arm, { once: true });
+  const removeUnlockListeners = () => {
+    window.removeEventListener("pointerdown", unlock);
+    window.removeEventListener("click", unlock);
+    window.removeEventListener("touchstart", unlock);
+    window.removeEventListener("keydown", unlock);
+  };
+
+  window.addEventListener("pointerdown", unlock);
+  window.addEventListener("click", unlock);
+  window.addEventListener("touchstart", unlock, { passive: true });
+  window.addEventListener("keydown", unlock);
 
   return {
     activate() {
-      if (activated || !context || !gain) {
+      if (activated) {
         return;
       }
       activated = true;
-      gain.gain.cancelScheduledValues(context.currentTime);
-      gain.gain.setValueAtTime(gain.gain.value, context.currentTime);
-      gain.gain.linearRampToValueAtTime(0.045, context.currentTime + 0.35);
+      onActivate?.();
+      whiteRoomAudio.currentTime = 0;
+      whiteRoomAudio.volume = WHITE_ROOM_SOUND_VOLUME;
+      whiteRoomAudio.play().catch((error) => console.error("WHITE ROOM AUDIO ERROR:", error));
     },
     deactivate() {
-      if (!context || !gain) {
-        return;
-      }
-      gain.gain.cancelScheduledValues(context.currentTime);
-      gain.gain.setValueAtTime(gain.gain.value, context.currentTime);
-      gain.gain.linearRampToValueAtTime(0, context.currentTime + 0.25);
+      whiteRoomAudio.pause();
+      whiteRoomAudio.currentTime = 0;
     },
     dispose() {
-      if (oscillator) {
-        oscillator.stop();
-      }
-      if (context) {
-        context.close();
-      }
+      removeUnlockListeners();
+      whiteRoomAudio.pause();
+      whiteRoomAudio.removeAttribute("src");
+      whiteRoomAudio.load();
     },
   };
 }
