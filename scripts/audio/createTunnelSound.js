@@ -19,20 +19,114 @@ export function createTunnelSound() {
   let unlocking = false;
   let started = false;
   let stopTimer = null;
+  let watchdogTimer = null;
+  let resumePending = false;
+  let lastPlaybackTime = 0;
+  let stalledChecks = 0;
 
   tunnelAudio.addEventListener("canplay", () => {
     console.info("TUNNEL WAV CANPLAY");
   }, { once: true });
 
+  const disableWatchdog = () => {
+    if (watchdogTimer !== null) {
+      window.clearInterval(watchdogTimer);
+      watchdogTimer = null;
+    }
+    resumePending = false;
+    stalledChecks = 0;
+  };
+
   const stop = () => {
+    // Mark the soundtrack inactive before pausing so the Safari watchdog can
+    // never revive it after the White Room transition or disposal.
+    started = false;
+    disableWatchdog();
     if (stopTimer !== null) {
       window.clearTimeout(stopTimer);
       stopTimer = null;
     }
     tunnelAudio.pause();
     tunnelAudio.currentTime = 0;
-    started = false;
   };
+
+  const resumePlayback = () => {
+    const beforeFileEnd = !Number.isFinite(tunnelAudio.duration)
+      || tunnelAudio.currentTime < tunnelAudio.duration - 0.1;
+    if (!started || resumePending || tunnelAudio.ended || !beforeFileEnd) {
+      return;
+    }
+    resumePending = true;
+    tunnelAudio.play().then(() => {
+      console.info("TUNNEL AUDIO RESUMED");
+    }).catch((error) => {
+      console.error("TUNNEL AUDIO RESUME ERROR", error);
+    }).finally(() => {
+      resumePending = false;
+    });
+  };
+
+  const enableWatchdog = () => {
+    if (watchdogTimer !== null) {
+      return;
+    }
+    lastPlaybackTime = tunnelAudio.currentTime;
+    watchdogTimer = window.setInterval(() => {
+      if (!started || tunnelAudio.ended) {
+        disableWatchdog();
+        return;
+      }
+      const currentTime = tunnelAudio.currentTime;
+      const hasStoppedProgressing = !tunnelAudio.paused
+        && tunnelAudio.readyState < HTMLMediaElement.HAVE_FUTURE_DATA
+        && Math.abs(currentTime - lastPlaybackTime) < 0.02;
+      stalledChecks = hasStoppedProgressing ? stalledChecks + 1 : 0;
+      if (tunnelAudio.paused || stalledChecks >= 2) {
+        resumePlayback();
+      }
+      lastPlaybackTime = currentTime;
+    }, 1000);
+  };
+
+  const onPause = () => {
+    if (!started) {
+      return;
+    }
+    console.info("TUNNEL AUDIO SAFARI PAUSED");
+    resumePlayback();
+  };
+
+  const onStalled = () => {
+    if (!started) {
+      return;
+    }
+    console.info("TUNNEL AUDIO SAFARI STALLED");
+    resumePlayback();
+  };
+
+  const onPlaying = () => {
+    lastPlaybackTime = tunnelAudio.currentTime;
+    stalledChecks = 0;
+  };
+
+  const onEnded = () => {
+    started = false;
+    disableWatchdog();
+  };
+
+  const onError = () => {
+    if (started) {
+      console.error("TUNNEL AUDIO RESUME ERROR", tunnelAudio.error);
+    }
+  };
+
+  tunnelAudio.addEventListener("pause", onPause);
+  tunnelAudio.addEventListener("stalled", onStalled);
+  tunnelAudio.addEventListener("suspend", onStalled);
+  tunnelAudio.addEventListener("waiting", onStalled);
+  tunnelAudio.addEventListener("playing", onPlaying);
+  tunnelAudio.addEventListener("ended", onEnded);
+  tunnelAudio.addEventListener("error", onError);
 
   const unlock = async () => {
     if (unlocked || unlocking) {
@@ -78,6 +172,7 @@ export function createTunnelSound() {
       tunnelAudio.volume = TUNNEL_SOUND_VOLUME;
       tunnelAudio.play().then(() => {
         console.info("TUNNEL WAV PLAY OK");
+        enableWatchdog();
         stopTimer = window.setTimeout(stop, TUNNEL_SOUND_DURATION * 1000);
       }).catch((error) => {
         started = false;
@@ -87,6 +182,13 @@ export function createTunnelSound() {
     dispose() {
       removeUnlockListeners();
       stop();
+      tunnelAudio.removeEventListener("pause", onPause);
+      tunnelAudio.removeEventListener("stalled", onStalled);
+      tunnelAudio.removeEventListener("suspend", onStalled);
+      tunnelAudio.removeEventListener("waiting", onStalled);
+      tunnelAudio.removeEventListener("playing", onPlaying);
+      tunnelAudio.removeEventListener("ended", onEnded);
+      tunnelAudio.removeEventListener("error", onError);
       tunnelAudio.removeAttribute("src");
       tunnelAudio.load();
     },
