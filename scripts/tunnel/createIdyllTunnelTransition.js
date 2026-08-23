@@ -98,7 +98,9 @@ export function createIdyllTunnelTransition(scene, options) {
     const hasReachedTunnelTimeline = elapsed >= TUNNEL_START;
     const hasReachedWhiteRoom = tunnelElapsed >= TUNNEL_DURATION;
     flashDebug.arm(tunnelElapsed);
-    if (!suctionSoundStarted && finalTunnelSpeedMultiplier(tunnelTime) > 1) {
+    // This is the exact existing branch that changes the visible route from
+    // normal travel into the final pull toward the White-Room aperture.
+    if (!suctionSoundStarted && finalTunnelTravelTime(tunnelTime) !== tunnelTime) {
       suctionSoundStarted = true;
       options.onSuctionStart?.();
     }
