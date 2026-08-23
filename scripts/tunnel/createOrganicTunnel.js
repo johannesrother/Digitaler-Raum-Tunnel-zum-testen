@@ -22,6 +22,12 @@ const GRAZING_LIGHT_RIGS = [
   { ahead: 6.5, side: 0.58, height: 0.12, range: 10.2, intensity: 1.12, color: "#9fadc0" },
   { ahead: 11.4, side: -0.56, height: 0.28, range: 11.6, intensity: 0.96, color: "#8f9bad" },
   { ahead: 15.5, side: 0.48, height: -0.2, range: 10.4, intensity: 0.7, color: "#8f9bad" },
+  // Lower-intensity counter-rakes overlap the existing moving pools of light.
+  // They keep folds readable farther down the route without turning the tunnel
+  // into a uniformly lit corridor.
+  { ahead: 4.4, side: -0.64, height: 0.42, range: 9.4, intensity: 0.62, color: "#9fadc0" },
+  { ahead: 9.1, side: 0.68, height: -0.34, range: 10.8, intensity: 0.7, color: "#8f9bad" },
+  { ahead: 14.1, side: -0.6, height: 0.18, range: 12.2, intensity: 0.6, color: "#ffd1a3" },
 ];
 
 // Six broad, asymmetric cross-section families establish chambers, compressed
