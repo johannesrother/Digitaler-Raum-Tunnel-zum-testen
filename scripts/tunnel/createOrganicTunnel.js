@@ -16,11 +16,14 @@ const WALL_DEFORMATION_TARGETS = 6;
 const MINIMUM_CLEAR_RADIUS = 0.58;
 const GRAZING_LIGHT_BOOST = 1.18;
 const FILL_LIGHT_BOOST = 1.06;
+// Existing morph fields remain deliberately uneven so they do not read as one
+// synchronized tube pulse. Values are moderate and still safety-clamped.
+const WALL_MOTION_AMPLITUDES = [1.1, 1.2, 1.02, 1.16, 1.07, 1.13];
 const GRAZING_LIGHT_RIGS = [
   { ahead: -1.4, side: 0.62, height: 0.24, range: 6.8, intensity: 0.72, color: "#ffd1a3" },
-  { ahead: 2.6, side: -0.66, height: -0.16, range: 8.6, intensity: 1.02, color: "#ffd1a3" },
-  { ahead: 6.5, side: 0.58, height: 0.12, range: 10.2, intensity: 1.12, color: "#9fadc0" },
-  { ahead: 11.4, side: -0.56, height: 0.28, range: 11.6, intensity: 0.96, color: "#8f9bad" },
+  { ahead: 2.6, side: -0.66, height: -0.16, range: 8.6, intensity: 1.02, color: "#ffd1a3", returnRake: 0.72 },
+  { ahead: 6.5, side: 0.58, height: 0.12, range: 10.2, intensity: 1.12, color: "#9fadc0", returnRake: 0.9 },
+  { ahead: 11.4, side: -0.56, height: 0.28, range: 11.6, intensity: 0.96, color: "#8f9bad", returnRake: 1.08 },
   { ahead: 15.5, side: 0.48, height: -0.2, range: 10.4, intensity: 0.7, color: "#8f9bad" },
   // Lower-intensity counter-rakes overlap the existing moving pools of light.
   // They keep folds readable farther down the route without turning the tunnel
@@ -328,7 +331,8 @@ function getLocalContraction(progress, angle, targetIndex) {
   const supportingWall = softAngularLobe(angle, targetIndex * 1.87 + 2.1, 1.04) * 0.52;
   const diagonalShift = 0.72 + 0.28 * Math.sin(angle * 1.45 + progress * 12.7 + targetIndex * 0.71);
   return regionalMask * entryMask * exitMask * journeyStrength
-    * (0.035 + principalWall * 0.078 + supportingWall * 0.045) * diagonalShift;
+    * (0.035 + principalWall * 0.078 + supportingWall * 0.045)
+    * diagonalShift * WALL_MOTION_AMPLITUDES[targetIndex];
 }
 
 function getJourneyDeformationStrength(time) {
@@ -544,7 +548,16 @@ function createTunnelLights(scene, meshes, route) {
     // forward-facing headlight.
     position.addInPlace(frame.lateral.scale(rig.side));
     position.addInPlace(frame.vertical.scale(rig.height));
-    const light = new BABYLON.PointLight(`organic-tunnel-light-${index}`, position, scene);
+    const light = rig.returnRake
+      ? new BABYLON.SpotLight(
+        `organic-tunnel-light-${index}`,
+        position,
+        frame.tangent.scale(-1),
+        1.72,
+        1.15,
+        scene,
+      )
+      : new BABYLON.PointLight(`organic-tunnel-light-${index}`, position, scene);
     light.range = rig.range;
     light.intensity = rig.intensity;
     light.diffuse = BABYLON.Color3.FromHexString(rig.color);
@@ -574,6 +587,15 @@ function updateTunnelLights(lights, route, time, impulse) {
     light.position.y += EYE_HEIGHT;
     light.position.addInPlace(frame.lateral.scale(sideOffset));
     light.position.addInPlace(frame.vertical.scale(rig.height));
+    if (rig.returnRake) {
+      // These broad spots sit beside a later tunnel section and aim back down
+      // the route, so their grazing highlight returns toward the traveller.
+      const viewerTime = BABYLON.Scalar.Clamp(time - rig.returnRake, 0, TUNNEL_DURATION);
+      const viewerFrame = route.frameAt(viewerTime / TUNNEL_DURATION);
+      const viewerPosition = viewerFrame.position.clone();
+      viewerPosition.y += EYE_HEIGHT;
+      light.direction.copyFrom(viewerPosition.subtract(light.position).normalize());
+    }
     // A modest lower bound keeps the fins readable through the late, dark
     // phases without flattening the tunnel into an evenly lit tube.
     const visibility = 0.66 + look.light * 0.42;
