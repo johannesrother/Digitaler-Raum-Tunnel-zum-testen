@@ -58,6 +58,7 @@ export function createIdyllTunnelTransition(scene, options) {
   let portalClosed = false;
   let tunnelEntryPrepared = false;
   let riftSoundStarted = false;
+  let suctionSoundStarted = false;
   let previousFrameTime = performance.now();
   const initialHeading = headingFrom(options.initialForward);
 
@@ -97,6 +98,10 @@ export function createIdyllTunnelTransition(scene, options) {
     const hasReachedTunnelTimeline = elapsed >= TUNNEL_START;
     const hasReachedWhiteRoom = tunnelElapsed >= TUNNEL_DURATION;
     flashDebug.arm(tunnelElapsed);
+    if (!suctionSoundStarted && finalTunnelSpeedMultiplier(tunnelTime) > 1) {
+      suctionSoundStarted = true;
+      options.onSuctionStart?.();
+    }
 
     if (!portalClosed) {
       tunnelWorld.reveal(tunnelReveal);
@@ -774,8 +779,9 @@ function activateWhiteRoom(options, root) {
     return;
   }
   options.whiteRoomActive = true;
+  options.onWhiteRoomEntry?.();
   options.whiteRoom.activate();
-  options.whiteRoomTone.activate();
+  options.whiteRoomTone.activate({ fadeInDuration: 2 });
   root.rotation.x = 0;
   root.rotation.z = 0;
 }

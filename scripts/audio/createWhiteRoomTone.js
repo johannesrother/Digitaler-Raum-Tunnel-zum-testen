@@ -15,6 +15,7 @@ export function createWhiteRoomTone({ onActivate } = {}) {
   let unlocked = false;
   let unlocking = false;
   let activated = false;
+  let fadeFrame = null;
 
   const unlock = async () => {
     if (unlocked || unlocking) {
@@ -49,17 +50,27 @@ export function createWhiteRoomTone({ onActivate } = {}) {
   window.addEventListener("keydown", unlock);
 
   return {
-    activate() {
+    activate({ fadeInDuration = 0 } = {}) {
       if (activated) {
         return;
       }
       activated = true;
       onActivate?.();
       whiteRoomAudio.currentTime = 0;
-      whiteRoomAudio.volume = WHITE_ROOM_SOUND_VOLUME;
-      whiteRoomAudio.play().catch((error) => console.error("WHITE ROOM AUDIO ERROR:", error));
+      whiteRoomAudio.volume = fadeInDuration > 0 ? 0 : WHITE_ROOM_SOUND_VOLUME;
+      whiteRoomAudio.play().then(() => {
+        if (fadeInDuration <= 0) return;
+        const startedAt = performance.now();
+        const update = () => {
+          const progress = Math.min(1, (performance.now() - startedAt) / (fadeInDuration * 1000));
+          whiteRoomAudio.volume = WHITE_ROOM_SOUND_VOLUME * progress;
+          if (progress < 1) fadeFrame = window.requestAnimationFrame(update);
+        };
+        update();
+      }).catch((error) => console.error("WHITE ROOM AUDIO ERROR:", error));
     },
     deactivate() {
+      if (fadeFrame !== null) window.cancelAnimationFrame(fadeFrame);
       whiteRoomAudio.pause();
       whiteRoomAudio.currentTime = 0;
     },

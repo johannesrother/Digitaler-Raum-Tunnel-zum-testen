@@ -24,6 +24,7 @@ export function createTunnelSound() {
   let lastPlaybackTime = 0;
   let stalledChecks = 0;
   let fadeInFrame = null;
+  let volumeFadeFrame = null;
 
   tunnelAudio.addEventListener("canplay", () => {
     console.info("TUNNEL WAV CANPLAY");
@@ -53,6 +54,10 @@ export function createTunnelSound() {
       window.cancelAnimationFrame(fadeInFrame);
       fadeInFrame = null;
     }
+    if (volumeFadeFrame !== null) {
+      window.cancelAnimationFrame(volumeFadeFrame);
+      volumeFadeFrame = null;
+    }
   };
 
   const fadeIn = (duration) => {
@@ -68,6 +73,21 @@ export function createTunnelSound() {
         fadeInFrame = window.requestAnimationFrame(update);
       } else {
         fadeInFrame = null;
+      }
+    };
+    update();
+  };
+
+  const fadeTo = (target, duration) => {
+    const from = tunnelAudio.volume;
+    const startedAt = performance.now();
+    const update = () => {
+      const progress = Math.min(1, (performance.now() - startedAt) / (duration * 1000));
+      tunnelAudio.volume = from + (target - from) * progress;
+      if (progress < 1) {
+        volumeFadeFrame = window.requestAnimationFrame(update);
+      } else {
+        volumeFadeFrame = null;
       }
     };
     update();
@@ -202,6 +222,11 @@ export function createTunnelSound() {
         started = false;
         console.error("TUNNEL WAV ERROR:", error);
       });
+    },
+    fadeTo,
+    fadeOutAndStop(duration = 2) {
+      fadeTo(0, duration);
+      window.setTimeout(stop, duration * 1000);
     },
     stop,
     dispose() {

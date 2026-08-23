@@ -9,6 +9,7 @@ import { createWhiteRoomTone } from "../audio/createWhiteRoomTone.js";
 import { createTunnelSound } from "../audio/createTunnelSound.js";
 import { createIdyllSound } from "../audio/createIdyllSound.js";
 import { createRiftSound } from "../audio/createRiftSound.js";
+import { createSuctionSound } from "../audio/createSuctionSound.js";
 
 /** Creates the static, standing-height idyll scene. WebXR is added separately. */
 export async function createIdyllScene(engine, canvas) {
@@ -52,8 +53,9 @@ export async function createIdyllScene(engine, canvas) {
   const whiteRoom = createWhiteRoom(scene, tunnelExit, exitDirection);
   const idyllSound = createIdyllSound();
   const riftSound = createRiftSound();
+  const suctionSound = createSuctionSound();
   const tunnelSound = createTunnelSound();
-  const whiteRoomTone = createWhiteRoomTone({ onActivate: tunnelSound.stop });
+  const whiteRoomTone = createWhiteRoomTone();
   const transition = createIdyllTunnelTransition(scene, {
     startPosition: dreamyIdyll.startPosition,
     entrance: environment.architecture.entrance,
@@ -65,6 +67,14 @@ export async function createIdyllScene(engine, canvas) {
     whiteRoom,
     whiteRoomTone,
     onRiftOpening: () => riftSound.start(),
+    onSuctionStart: () => {
+      suctionSound.start();
+      tunnelSound.fadeTo(0.28, 8);
+    },
+    onWhiteRoomEntry: () => {
+      tunnelSound.fadeOutAndStop(2);
+      suctionSound.fadeOutAndStop(2);
+    },
     onTunnelEntry: () => {
       clearDreamyIdyllFromTunnel();
       idyllSound.fadeOutAndStop(2.5);
@@ -88,6 +98,7 @@ export async function createIdyllScene(engine, canvas) {
     whiteRoomTone,
     idyllSound,
     riftSound,
+    suctionSound,
     tunnelSound,
   };
 
