@@ -19,8 +19,8 @@ const FILL_LIGHT_BOOST = 1.06;
 const LATE_TUNNEL_VISIBILITY_START = 40;
 const LATE_TUNNEL_RANGE_BOOST = 1.22;
 const WHITE_ROOM_SPILL_START = 36;
-const WHITE_ROOM_SPILL_MAX_INTENSITY = 1.1;
-const WHITE_ROOM_SPILL_RANGE = 26;
+const WHITE_ROOM_SPILL_MAX_INTENSITY = 4.5;
+const WHITE_ROOM_SPILL_RANGE = 52;
 // Existing morph fields remain deliberately uneven so they do not read as one
 // synchronized tube pulse. Values are moderate and still safety-clamped.
 const WALL_MOTION_AMPLITUDES = [1.1, 1.2, 1.02, 1.16, 1.07, 1.13];
@@ -585,7 +585,7 @@ function createTunnelLights(scene, meshes, route) {
     "white-room-tunnel-spill",
     spillPosition,
     exitFrame.tangent.scale(-1),
-    2.24,
+    2.58,
     1,
     scene,
   );
