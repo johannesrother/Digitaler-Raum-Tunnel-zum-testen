@@ -15,7 +15,9 @@ const WHITE_PREVIEW_START = 30;
 const TUNNEL_BLEND_DURATION = 2;
 const FINAL_PULL_START = 52;
 const FINAL_PULL_DURATION = TUNNEL_DURATION - FINAL_PULL_START;
-const FINAL_PULL_STRENGTH = 1.2;
+// Preserve the established onset and endpoint while making the existing final
+// acceleration read more physically alongside the suction sound.
+const FINAL_PULL_STRENGTH = 1.55;
 const RIFT_APPROACH_REMAINING_TIME = 3.4;
 const RIFT_CLOSE_DURATION = 1.4;
 const RIFT_CLOSURE_FADE_RANGE = 0.42;
