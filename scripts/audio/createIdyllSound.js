@@ -10,6 +10,7 @@ export function createIdyllSound() {
   idyllAudio.load();
 
   let started = false;
+  let fadeFrame = null;
 
   const start = () => {
     if (started) {
@@ -37,9 +38,31 @@ export function createIdyllSound() {
   start();
 
   return {
+    fadeOutAndStop(duration = 2.5) {
+      if (!started) {
+        return;
+      }
+      const from = idyllAudio.volume;
+      const startedAt = performance.now();
+      const update = () => {
+        const progress = Math.min(1, (performance.now() - startedAt) / (duration * 1000));
+        idyllAudio.volume = from * (1 - progress);
+        if (progress < 1) {
+          fadeFrame = window.requestAnimationFrame(update);
+          return;
+        }
+        this.stop();
+        fadeFrame = null;
+      };
+      update();
+    },
     stop() {
       started = false;
       removeStartListeners();
+      if (fadeFrame !== null) {
+        window.cancelAnimationFrame(fadeFrame);
+        fadeFrame = null;
+      }
       idyllAudio.pause();
       idyllAudio.currentTime = 0;
     },

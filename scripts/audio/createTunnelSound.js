@@ -23,6 +23,7 @@ export function createTunnelSound() {
   let resumePending = false;
   let lastPlaybackTime = 0;
   let stalledChecks = 0;
+  let fadeInFrame = null;
 
   tunnelAudio.addEventListener("canplay", () => {
     console.info("TUNNEL WAV CANPLAY");
@@ -48,6 +49,28 @@ export function createTunnelSound() {
     }
     tunnelAudio.pause();
     tunnelAudio.currentTime = 0;
+    if (fadeInFrame !== null) {
+      window.cancelAnimationFrame(fadeInFrame);
+      fadeInFrame = null;
+    }
+  };
+
+  const fadeIn = (duration) => {
+    if (duration <= 0) {
+      tunnelAudio.volume = TUNNEL_SOUND_VOLUME;
+      return;
+    }
+    const startedAt = performance.now();
+    const update = () => {
+      const progress = Math.min(1, (performance.now() - startedAt) / (duration * 1000));
+      tunnelAudio.volume = TUNNEL_SOUND_VOLUME * progress;
+      if (progress < 1) {
+        fadeInFrame = window.requestAnimationFrame(update);
+      } else {
+        fadeInFrame = null;
+      }
+    };
+    update();
   };
 
   const resumePlayback = () => {
@@ -163,16 +186,17 @@ export function createTunnelSound() {
   window.addEventListener("keydown", unlock);
 
   return {
-    start() {
+    start({ fadeInDuration = 0 } = {}) {
       if (started) {
         return;
       }
       started = true;
       tunnelAudio.currentTime = 0;
-      tunnelAudio.volume = TUNNEL_SOUND_VOLUME;
+      tunnelAudio.volume = fadeInDuration > 0 ? 0 : TUNNEL_SOUND_VOLUME;
       tunnelAudio.play().then(() => {
         console.info("TUNNEL WAV PLAY OK");
         enableWatchdog();
+        fadeIn(fadeInDuration);
         stopTimer = window.setTimeout(stop, TUNNEL_SOUND_DURATION * 1000);
       }).catch((error) => {
         started = false;

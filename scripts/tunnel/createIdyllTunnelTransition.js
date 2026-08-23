@@ -57,6 +57,7 @@ export function createIdyllTunnelTransition(scene, options) {
   let whiteRoomFinished = false;
   let portalClosed = false;
   let tunnelEntryPrepared = false;
+  let riftSoundStarted = false;
   let previousFrameTime = performance.now();
   const initialHeading = headingFrom(options.initialForward);
 
@@ -96,6 +97,11 @@ export function createIdyllTunnelTransition(scene, options) {
     const hasReachedTunnelTimeline = elapsed >= TUNNEL_START;
     const hasReachedWhiteRoom = tunnelElapsed >= TUNNEL_DURATION;
     flashDebug.arm(tunnelElapsed);
+
+    if (!riftSoundStarted && riftFormation > 0) {
+      riftSoundStarted = true;
+      options.onRiftOpening?.();
+    }
 
     if (!portalClosed) {
       tunnelWorld.reveal(tunnelReveal);
