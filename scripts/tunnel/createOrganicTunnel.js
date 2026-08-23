@@ -18,6 +18,9 @@ const GRAZING_LIGHT_BOOST = 1.18;
 const FILL_LIGHT_BOOST = 1.06;
 const LATE_TUNNEL_VISIBILITY_START = 40;
 const LATE_TUNNEL_RANGE_BOOST = 1.22;
+const WHITE_ROOM_SPILL_START = 36;
+const WHITE_ROOM_SPILL_MAX_INTENSITY = 1.1;
+const WHITE_ROOM_SPILL_RANGE = 26;
 // Existing morph fields remain deliberately uneven so they do not read as one
 // synchronized tube pulse. Values are moderate and still safety-clamped.
 const WALL_MOTION_AMPLITUDES = [1.1, 1.2, 1.02, 1.16, 1.07, 1.13];
@@ -101,6 +104,7 @@ export function createOrganicTunnel(scene, options) {
       mesh.setEnabled(enabled);
       lights.points.forEach((light) => light.setEnabled(enabled));
       lights.fill.setEnabled(enabled);
+      lights.whiteRoomSpill.setEnabled(enabled);
     },
     update(tunnelTime) {
       sequenceActive = true;
@@ -130,6 +134,7 @@ export function createOrganicTunnel(scene, options) {
       scene.onBeforeRenderObservable.remove(observer);
       lights.points.forEach((light) => light.dispose());
       lights.fill.dispose();
+      lights.whiteRoomSpill.dispose();
       wallDeformation.dispose();
       mesh.dispose();
       material.dispose();
@@ -571,7 +576,24 @@ function createTunnelLights(scene, meshes, route) {
   fill.groundColor = BABYLON.Color3.FromHexString("#321d26");
   fill.intensity = 0.18;
   fill.includedOnlyMeshes.push(...meshes);
-  return { points, fill, rigs: GRAZING_LIGHT_RIGS };
+  const exitFrame = route.frameAt(1);
+  const spillPosition = exitFrame.position.add(exitFrame.tangent.scale(3.1));
+  spillPosition.y += EYE_HEIGHT;
+  // Positioned just beyond the existing tunnel exit, this broad cone points
+  // back into the tunnel and reads as light spilling out of the White Room.
+  const whiteRoomSpill = new BABYLON.SpotLight(
+    "white-room-tunnel-spill",
+    spillPosition,
+    exitFrame.tangent.scale(-1),
+    2.24,
+    1,
+    scene,
+  );
+  whiteRoomSpill.diffuse = BABYLON.Color3.FromHexString("#e7edf5");
+  whiteRoomSpill.range = WHITE_ROOM_SPILL_RANGE;
+  whiteRoomSpill.intensity = 0;
+  whiteRoomSpill.includedOnlyMeshes.push(...meshes);
+  return { points, fill, whiteRoomSpill, rigs: GRAZING_LIGHT_RIGS };
 }
 
 function updateTunnelLights(lights, route, time, impulse) {
@@ -580,9 +602,11 @@ function updateTunnelLights(lights, route, time, impulse) {
   // Keep the end dark, but never allow the converging tunnel to lose all
   // readable relief shortly before the White Room aperture.
   const lateVisibility = smoothstep((time - LATE_TUNNEL_VISIBILITY_START) / (TUNNEL_DURATION - LATE_TUNNEL_VISIBILITY_START));
+  const whiteRoomSpillProgress = smoothstep((time - WHITE_ROOM_SPILL_START) / (TUNNEL_DURATION - WHITE_ROOM_SPILL_START));
   // Keep the fill deliberately low: it only preserves a trace of wall detail
   // in the deepest shadows, while the moving side lights define the relief.
   lights.fill.intensity = (0.14 + look.light * 0.13 + lateVisibility * 0.14) * FILL_LIGHT_BOOST;
+  lights.whiteRoomSpill.intensity = WHITE_ROOM_SPILL_MAX_INTENSITY * whiteRoomSpillProgress;
   lights.points.forEach((light, index) => {
     const rig = lights.rigs[index];
     const lightTime = BABYLON.Scalar.Clamp(time + rig.ahead, 0, TUNNEL_DURATION);
