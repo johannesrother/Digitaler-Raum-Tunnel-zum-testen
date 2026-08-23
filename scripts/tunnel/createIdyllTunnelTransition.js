@@ -98,11 +98,6 @@ export function createIdyllTunnelTransition(scene, options) {
     const hasReachedWhiteRoom = tunnelElapsed >= TUNNEL_DURATION;
     flashDebug.arm(tunnelElapsed);
 
-    if (!riftSoundStarted && riftFormation > 0) {
-      riftSoundStarted = true;
-      options.onRiftOpening?.();
-    }
-
     if (!portalClosed) {
       tunnelWorld.reveal(tunnelReveal);
     }
@@ -171,7 +166,16 @@ export function createIdyllTunnelTransition(scene, options) {
       portalClosed = true;
       idyllHidden = true;
     }
-    rift.update(elapsed, riftFormation, tunnelReveal, tunnelEntryPrepared ? tunnelTime : -1);
+    const riftIsVisiblyOpen = rift.update(
+      elapsed,
+      riftFormation,
+      tunnelReveal,
+      tunnelEntryPrepared ? tunnelTime : -1,
+    );
+    if (!riftSoundStarted && riftIsVisiblyOpen) {
+      riftSoundStarted = true;
+      options.onRiftOpening?.();
+    }
 
     debug.update(elapsed, tunnelTime, tunnelRoute, tunnelEntryPrepared, riftFormation, riftApproachTime);
     flashDebug.capture(tunnelElapsed, tunnelTime, tunnelRoute, riftApproachTime);
@@ -600,7 +604,7 @@ function createSpacetimeRift(scene, entrance, tunnelStart, tunnelMesh, idyllWorl
         fragments.forEach(({ mesh }) => mesh.setEnabled(false));
         cracks.forEach((mesh) => mesh.setEnabled(false));
         edgeHighlights.forEach((mesh) => mesh.setEnabled(false));
-        return;
+        return false;
       }
       const opening = smoothstep((elapsed - RIFT_TUNNEL_REVEAL_START) / (IDYLL_TRAVEL_DURATION - RIFT_TUNNEL_REVEAL_START));
       const apertureScale = (0.08 + formation * 0.78) * closure;
@@ -642,6 +646,10 @@ function createSpacetimeRift(scene, entrance, tunnelStart, tunnelMesh, idyllWorl
         ) * closureVisibility;
         mesh.setEnabled(mesh.visibility > RIFT_VISIBILITY_EPSILON);
       });
+      return voidMesh.mesh.isEnabled()
+        || fragments.some(({ mesh }) => mesh.isEnabled())
+        || cracks.some((mesh) => mesh.isEnabled())
+        || edgeHighlights.some((mesh) => mesh.isEnabled());
     },
     closePortalMask,
     entryPlaneDistance(position, nearClip = 0) {
