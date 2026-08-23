@@ -16,6 +16,8 @@ const WALL_DEFORMATION_TARGETS = 6;
 const MINIMUM_CLEAR_RADIUS = 0.58;
 const GRAZING_LIGHT_BOOST = 1.18;
 const FILL_LIGHT_BOOST = 1.06;
+const LATE_TUNNEL_VISIBILITY_START = 40;
+const LATE_TUNNEL_RANGE_BOOST = 1.22;
 // Existing morph fields remain deliberately uneven so they do not read as one
 // synchronized tube pulse. Values are moderate and still safety-clamped.
 const WALL_MOTION_AMPLITUDES = [1.1, 1.2, 1.02, 1.16, 1.07, 1.13];
@@ -575,9 +577,12 @@ function createTunnelLights(scene, meshes, route) {
 function updateTunnelLights(lights, route, time, impulse) {
   const look = getTunnelLook(time);
   const phase = getTunnelPhase(time);
+  // Keep the end dark, but never allow the converging tunnel to lose all
+  // readable relief shortly before the White Room aperture.
+  const lateVisibility = smoothstep((time - LATE_TUNNEL_VISIBILITY_START) / (TUNNEL_DURATION - LATE_TUNNEL_VISIBILITY_START));
   // Keep the fill deliberately low: it only preserves a trace of wall detail
   // in the deepest shadows, while the moving side lights define the relief.
-  lights.fill.intensity = (0.14 + look.light * 0.13) * FILL_LIGHT_BOOST;
+  lights.fill.intensity = (0.14 + look.light * 0.13 + lateVisibility * 0.14) * FILL_LIGHT_BOOST;
   lights.points.forEach((light, index) => {
     const rig = lights.rigs[index];
     const lightTime = BABYLON.Scalar.Clamp(time + rig.ahead, 0, TUNNEL_DURATION);
@@ -587,6 +592,7 @@ function updateTunnelLights(lights, route, time, impulse) {
     light.position.y += EYE_HEIGHT;
     light.position.addInPlace(frame.lateral.scale(sideOffset));
     light.position.addInPlace(frame.vertical.scale(rig.height));
+    light.range = rig.range * BABYLON.Scalar.Lerp(1, LATE_TUNNEL_RANGE_BOOST, lateVisibility);
     if (rig.returnRake) {
       // These broad spots sit beside a later tunnel section and aim back down
       // the route, so their grazing highlight returns toward the traveller.
@@ -598,7 +604,7 @@ function updateTunnelLights(lights, route, time, impulse) {
     }
     // A modest lower bound keeps the fins readable through the late, dark
     // phases without flattening the tunnel into an evenly lit tube.
-    const visibility = 0.66 + look.light * 0.42;
+    const visibility = 0.66 + look.light * 0.42 + lateVisibility * 0.2;
     const pulse = index === 2 ? impulse * 0.16 : 0;
     light.intensity = rig.intensity * visibility * GRAZING_LIGHT_BOOST + pulse;
     if (phase.id === "PEAK" && index >= 3) {
